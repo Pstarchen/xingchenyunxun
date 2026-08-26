@@ -1308,6 +1308,7 @@ struct Index {
       .width('100%')
       .height('100%')
      }
+    .mode(NavigationMode.Stack)
     .navDestination(this.DeviceDestination)
     .titleMode(HdsNavigationTitleMode.MINI)
     .hideBackButton(true)

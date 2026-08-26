@@ -3,7 +3,7 @@ import { hdsEffect } from '@kit.UIDesignKit'
 import { Device, MonitorConnection, NetworkService, ServiceCategory, ServiceCheckResult, ServiceCheckType, ServiceMetric, ServiceStateFilter } from '../model/MonitorModels'
 import { MonitorApi, MonitorApiError } from '../utils/MonitorApi'
 import { getThemePalette, ThemeId, ThemePalette } from '../model/ThemeModels'
-import { getContentMaxWidth, getNavigationWidth, getPageHorizontalPadding, LayoutSize } from '../model/ResponsiveLayout'
+import { getNavigationWidth, getPageHorizontalPadding, getServiceContentMaxWidth, LayoutSize } from '../model/ResponsiveLayout'
 import { ReferenceIcon, ReferenceServiceSummaryCard } from './ReferenceComponents'
 import { NetworkServiceDetailOverlay } from './NetworkServiceDetailOverlay'
 
@@ -115,23 +115,7 @@ export struct ServiceAvailabilityView {
   }
 
   private contentContainerMaxWidth(): number {
-    return getContentMaxWidth(this.layoutSize, this.contentViewportWidth())
-  }
-
-  private contentWidth(): number {
-    const viewportWidth: number = this.contentViewportWidth()
-    const maximumWidth: number = this.contentContainerMaxWidth()
-    const containerWidth: number = viewportWidth < maximumWidth ? viewportWidth : maximumWidth
-    const contentWidth: number = containerWidth - getPageHorizontalPadding(this.layoutSize) * 2
-    return contentWidth > 0 ? contentWidth : 0
-  }
-
-  private useTwoColumnSections(): boolean {
-    return this.contentWidth() >= 900
-  }
-
-  private serviceSectionWidth(): string {
-    return this.useTwoColumnSections() ? '49%' : '100%'
+    return getServiceContentMaxWidth(this.layoutSize, this.contentViewportWidth())
   }
 
   private onDetailBackRequestChanged(): void {
@@ -204,15 +188,8 @@ export struct ServiceAvailabilityView {
     const values: Device[] = []
     for (const device of this.devices) {
       if (this.categoryFilter === 'NETWORK') continue
-      if (this.hostServices(device).length === 0) continue
-      let matched = false
-      for (const service of this.hostServices(device)) {
-        if (this.matchesState(this.hostState(service.status))) {
-          matched = true
-          break
-        }
-      }
-      if (matched) values.push(device)
+      if (this.filteredHostServices(device).length === 0) continue
+      values.push(device)
     }
     return values
   }
@@ -234,6 +211,15 @@ export struct ServiceAvailabilityView {
 
   private hostServices(device: Device): ServiceMetric[] {
     return device.latest?.services ?? []
+  }
+
+  private filteredHostServices(device: Device): ServiceMetric[] {
+    const values: ServiceMetric[] = []
+    for (const service of this.hostServices(device)) {
+      if (!this.matchesState(this.hostState(service.status))) continue
+      values.push(service)
+    }
+    return values
   }
 
   private networkCountText(): string {
@@ -424,11 +410,13 @@ export struct ServiceAvailabilityView {
                 Text('正在加载服务状态…').fontSize(13).fontColor(this.themePalette().secondary)
               }.width('100%').padding({ top: 68, bottom: 68 })
             } else {
-              Flex({ direction: this.useTwoColumnSections() ? FlexDirection.Row : FlexDirection.Column,
-                justifyContent: this.useTwoColumnSections() ? FlexAlign.SpaceBetween : FlexAlign.Start,
-                alignItems: ItemAlign.Start }) {
-                this.NetworkSection()
-                this.HostSection()
+              Column({ space: 22 }) {
+                if (this.categoryFilter !== 'HOST') {
+                  this.NetworkSection()
+                }
+                if (this.categoryFilter !== 'NETWORK') {
+                  this.HostSection()
+                }
               }.width('100%')
             }
             Blank().height(this.bottomInset)
@@ -450,7 +438,7 @@ export struct ServiceAvailabilityView {
             canRunChecks: this.canRunChecks,
              runningServiceId: this.runningServiceId,
              transitionId: this.transitionId(service.id),
-             bottomInset: 0,
+             bottomInset: this.bottomInset,
              layoutSize: this.layoutSize,
              windowWidthVp: this.windowWidthVp,
              windowHeightVp: this.windowHeightVp,
@@ -528,8 +516,7 @@ export struct ServiceAvailabilityView {
       } else if (this.categoryFilter !== 'HOST') {
         this.EmptyState('暂无网络服务', this.services.length ? '当前筛选条件下没有匹配的网络服务。' : '请在监控服务器中配置 HTTP、Ping 或 TCPing 服务。')
       }
-    }.width(this.serviceSectionWidth())
-      .margin({ right: this.useTwoColumnSections() ? 7 : 0, bottom: this.useTwoColumnSections() ? 0 : 14 })
+    }.width('100%')
       .opacity(this.contentStage >= 2 ? 1 : 0)
       .translate({ y: this.contentStage >= 2 ? 0 : 20 })
       .animation({ duration: 420, curve: curves.springMotion(0.5, 0.76) })
@@ -559,7 +546,7 @@ export struct ServiceAvailabilityView {
         Text('主机系统服务').fontSize(17).fontWeight(FontWeight.Bold).fontColor(this.themePalette().text)
         Blank()
         Text(`${this.filteredDevices().length} 台服务器`).fontSize(12).fontColor(this.themePalette().primary)
-      }.width('100%').padding({ left: 4, right: 4 }).margin({ top: this.useTwoColumnSections() ? 0 : 8 })
+      }.width('100%').padding({ left: 4, right: 4 })
       if (this.filteredDevices().length) {
         ForEach(this.filteredDevices(), (device: Device) => {
           this.HostDeviceCard(device)
@@ -567,7 +554,7 @@ export struct ServiceAvailabilityView {
       } else if (this.categoryFilter !== 'NETWORK') {
         this.EmptyState('暂无主机服务上报', 'Agent 上报系统服务后，这里会按服务器展示运行状态。')
       }
-    }.width(this.serviceSectionWidth())
+    }.width('100%')
       .opacity(this.contentStage >= 3 ? 1 : 0)
       .translate({ y: this.contentStage >= 3 ? 0 : 20 })
       .animation({ duration: 420, curve: curves.springMotion(0.5, 0.76) })
@@ -584,7 +571,7 @@ export struct ServiceAvailabilityView {
         }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 11 })
         Text(this.time(device.lastSeenAt)).fontSize(10).fontColor(this.themePalette().muted)
       }.width('100%')
-      ForEach(this.hostServices(device), (service: ServiceMetric) => {
+      ForEach(this.filteredHostServices(device), (service: ServiceMetric) => {
         this.HostServiceRow(service)
       }, (service: ServiceMetric) => `${device.id}-${service.name}`)
     }.width('100%').padding(15).backgroundColor(this.themePalette().card).borderRadius(22).border({ width: 1, color: this.themePalette().border, radius: 22 }).shadow({ radius: 15, color: this.themePalette().shadow, offsetY: 6 })

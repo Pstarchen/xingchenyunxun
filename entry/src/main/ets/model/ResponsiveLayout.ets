@@ -46,6 +46,19 @@ export function getContentMaxWidth(layoutSize: LayoutSize, availableWidthVp: num
   return 1200
 }
 
+export function getServiceContentMaxWidth(layoutSize: LayoutSize, availableWidthVp: number): number {
+  if (availableWidthVp <= 0) {
+    return 0
+  }
+  if (layoutSize === 'compact') {
+    return getClampedWidth(availableWidthVp, availableWidthVp)
+  }
+  if (layoutSize === 'medium') {
+    return getClampedWidth(availableWidthVp, 720)
+  }
+  return getClampedWidth(availableWidthVp, 736)
+}
+
 export function getMainBottomInset(layoutSize: LayoutSize, safeAreaVp: number): number {
   return 32
 }
@@ -76,18 +89,20 @@ export function getDetailPanelWidth(windowWidthVp: number, layoutSize: LayoutSiz
   if (layoutSize === 'compact') {
     return windowWidthVp * 0.9
   }
-  if (layoutSize === 'medium') {
-    return getClampedWidth(windowWidthVp - 48, 680)
+  const availableWidthVp: number = windowWidthVp - getPageHorizontalPadding(layoutSize) * 2
+  return getClampedWidth(availableWidthVp, 620)
+}
+
+export function getDetailPanelHeight(windowHeightVp: number, layoutSize: LayoutSize): number {
+  if (windowHeightVp <= 0) {
+    return 600
   }
-  const availableWidthVp: number = windowWidthVp - 64
-  if (availableWidthVp <= 560) {
-    return availableWidthVp > 0 ? availableWidthVp : 0
+  if (layoutSize === 'compact') {
+    return windowHeightVp * 0.75
   }
-  const preferredWidthVp: number = windowWidthVp * 0.4
-  if (preferredWidthVp < 560) {
-    return 560
-  }
-  return getClampedWidth(availableWidthVp, preferredWidthVp < 620 ? preferredWidthVp : 620)
+  const preferredHeightVp: number = windowHeightVp * 0.82
+  const availableHeightVp: number = windowHeightVp - 48
+  return preferredHeightVp < availableHeightVp ? preferredHeightVp : availableHeightVp
 }
 
 export function getTrendChartHeight(layoutSize: LayoutSize): number {

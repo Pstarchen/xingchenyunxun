@@ -1,7 +1,7 @@
 import { curves } from '@kit.ArkUI'
 import { hdsEffect } from '@kit.UIDesignKit'
 import { NetworkService, ServiceCheckResult, ServiceCheckType } from '../model/MonitorModels'
-import { getDetailPanelWidth, getNavigationWidth, LayoutSize } from '../model/ResponsiveLayout'
+import { getDetailPanelHeight, getDetailPanelWidth, getNavigationWidth, LayoutSize } from '../model/ResponsiveLayout'
 import { getThemePalette, ThemeId, ThemePalette } from '../model/ThemeModels'
 import { ReferenceIcon } from './ReferenceComponents'
 
@@ -35,7 +35,7 @@ export struct NetworkServiceDetailOverlay {
   @State refreshLight: hdsEffect.PointLightSourceType = hdsEffect.PointLightSourceType.NONE
 
   build() {
-    Stack({ alignContent: this.layoutSize === 'expanded' ? Alignment.End : Alignment.Center }) {
+    Stack({ alignContent: Alignment.Center }) {
       Column()
         .width('100%')
         .height('100%')
@@ -97,7 +97,6 @@ export struct NetworkServiceDetailOverlay {
       }
       .width(this.detailPanelWidth())
       .height(this.detailPanelHeight())
-      .margin({ right: this.layoutSize === 'expanded' ? 32 : 0 })
       .backgroundColor(this.themePalette().card)
       .borderRadius(32)
       .border({ width: 1, color: this.themePalette().border, radius: 32 })
@@ -497,20 +496,7 @@ export struct NetworkServiceDetailOverlay {
   }
 
   private detailPanelHeight(): number {
-    if (this.windowHeightVp <= 0) {
-      return 600
-    }
-    if (this.layoutSize === 'compact') {
-      return this.windowHeightVp * 0.75
-    }
-    if (this.layoutSize === 'medium') {
-      const preferredHeight: number = this.windowHeightVp * 0.82
-      const availableHeight: number = this.windowHeightVp > 48 ? this.windowHeightVp - 48 : this.windowHeightVp
-      return preferredHeight < availableHeight ? preferredHeight : availableHeight
-    }
-    const preferredHeight: number = this.windowHeightVp * 0.9
-    const availableHeight: number = this.windowHeightVp > 64 ? this.windowHeightVp - 64 : this.windowHeightVp
-    return preferredHeight < availableHeight ? preferredHeight : availableHeight
+    return getDetailPanelHeight(this.windowHeightVp, this.layoutSize)
   }
 
   private serviceTypeLabel(type: ServiceCheckType): string {
