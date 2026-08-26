@@ -1,0 +1,20 @@
+{
+  "string": [
+    {
+      "name": "module_desc",
+      "value": "星辰云巡服务器监控"
+    },
+    {
+      "name": "EntryAbility_desc",
+      "value": "星辰云巡主界面"
+    },
+    {
+      "name": "EntryAbility_label",
+      "value": "星辰云巡"
+    },
+    {
+      "name": "camera_permission_reason",
+      "value": "用于扫描 Web 控制台提供的绑定二维码"
+    }
+  ]
+}

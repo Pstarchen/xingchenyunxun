@@ -1,0 +1,340 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="color-scheme" content="light dark" />
+  <title>星辰云巡隐私政策</title>
+  <style>
+    :root {
+      color-scheme: light dark;
+      --background: #f7f7f5;
+      --surface: #ffffff;
+      --text: rgba(20, 20, 18, 0.92);
+      --secondary: rgba(20, 20, 18, 0.62);
+      --border: rgba(20, 20, 18, 0.09);
+      --accent: #b7791f;
+      --accent-soft: rgba(183, 121, 31, 0.11);
+      --notice: #72510f;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      background: var(--background);
+      color: var(--text);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", Arial, sans-serif;
+      font-size: 16px;
+      line-height: 1.8;
+    }
+
+    main {
+      width: min(880px, calc(100% - 32px));
+      margin: 32px auto;
+      padding: 42px 48px 64px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 24px;
+      box-shadow: 0 18px 55px rgba(36, 29, 18, 0.07);
+    }
+
+    header {
+      text-align: center;
+      margin-bottom: 32px;
+    }
+
+    .logo {
+      width: 76px;
+      height: 76px;
+      border-radius: 20px;
+      object-fit: cover;
+      box-shadow: 0 10px 28px rgba(183, 121, 31, 0.18);
+    }
+
+    h1 {
+      margin: 18px 0 8px;
+      font-size: 26px;
+      line-height: 1.35;
+    }
+
+    h2 {
+      margin: 38px 0 14px;
+      font-size: 19px;
+      line-height: 1.5;
+    }
+
+    h3 {
+      margin: 24px 0 10px;
+      font-size: 16px;
+      line-height: 1.6;
+    }
+
+    p {
+      margin: 0 0 12px;
+      text-align: justify;
+      overflow-wrap: anywhere;
+    }
+
+    ul {
+      margin: 8px 0 14px;
+      padding-left: 24px;
+    }
+
+    li {
+      margin: 7px 0;
+    }
+
+    a {
+      color: var(--accent);
+      text-decoration: none;
+    }
+
+    strong {
+      font-weight: 650;
+    }
+
+    .date {
+      margin: 2px 0;
+      color: var(--secondary);
+      font-size: 14px;
+      text-align: center;
+    }
+
+    .lead,
+    .notice {
+      padding: 16px 18px;
+      border-radius: 14px;
+      background: var(--accent-soft);
+      color: var(--notice);
+    }
+
+    .lead {
+      margin: 24px 0 16px;
+    }
+
+    .notice {
+      margin: 14px 0;
+    }
+
+    .table-wrap {
+      margin: 14px 0 18px;
+      overflow-x: auto;
+      border: 1px solid var(--border);
+      border-radius: 14px;
+    }
+
+    table {
+      width: 100%;
+      min-width: 660px;
+      border-collapse: collapse;
+      background: var(--surface);
+    }
+
+    th,
+    td {
+      padding: 13px 14px;
+      border-bottom: 1px solid var(--border);
+      text-align: left;
+      vertical-align: top;
+    }
+
+    th {
+      font-size: 14px;
+      background: var(--accent-soft);
+    }
+
+    tr:last-child td {
+      border-bottom: 0;
+    }
+
+    .footer {
+      margin-top: 42px;
+      padding-top: 20px;
+      border-top: 1px solid var(--border);
+      color: var(--secondary);
+      font-size: 14px;
+      text-align: center;
+    }
+
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --background: #0d0d0c;
+        --surface: #171715;
+        --text: rgba(255, 255, 255, 0.9);
+        --secondary: rgba(255, 255, 255, 0.6);
+        --border: rgba(255, 255, 255, 0.1);
+        --accent: #e6ad52;
+        --accent-soft: rgba(230, 173, 82, 0.13);
+        --notice: #f1c982;
+      }
+
+      main {
+        box-shadow: none;
+      }
+    }
+
+    @media (max-width: 640px) {
+      main {
+        width: 100%;
+        margin: 0;
+        padding: 28px 20px 48px;
+        border: 0;
+        border-radius: 0;
+        box-shadow: none;
+      }
+
+      h1 {
+        font-size: 23px;
+      }
+
+      h2 {
+        margin-top: 32px;
+        font-size: 18px;
+      }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <header>
+      <img class="logo" src="星辰云巡logo.png" alt="星辰云巡 Logo" />
+      <h1>星辰云巡隐私政策</h1>
+      <p class="date">更新日期：2026年08月25日</p>
+      <p class="date">生效日期：2026年08月25日</p>
+    </header>
+
+    <p><strong>星辰云巡</strong>是由<strong>衣峻辰</strong>（以下简称“我们”）开发并运营的服务器监控客户端。本政策用于说明星辰云巡在您使用应用期间如何处理信息，以及您如何管理相关信息和设备权限。</p>
+    <p class="lead"><strong>特别提示：</strong>星辰云巡本身不为您托管监控数据，也不要求注册应用账户。应用会按照您的配置连接您指定的监控服务器。服务器的运营者、数据处理规则和安全能力由您或相关第三方负责，请您在绑定前确认对该服务器及 API Token 具有合法授权。</p>
+
+    <h2>1. 我们如何收集和使用信息</h2>
+
+    <h3>1.1 服务器绑定信息</h3>
+    <p>当您手动输入或通过二维码绑定监控服务器时，应用会处理以下信息：</p>
+    <ul>
+      <li><strong>服务器地址：</strong>用于确定监控 API 的请求目标。</li>
+      <li><strong>API Token：</strong>用于通过 Bearer Token 方式向您指定的服务器进行身份验证。</li>
+      <li><strong>Token 权限范围（如二维码中包含）：</strong>用于判断应用是否可以执行告警确认等操作。</li>
+    </ul>
+    <p>上述绑定信息保存在您的设备本地，用于在后续启动时恢复连接。我们不会将绑定信息主动上传至由我们运营的服务器。</p>
+
+    <h3>1.2 监控数据</h3>
+    <p>连接成功后，应用会从您指定的服务器读取、展示并在应用运行期间处理监控数据，可能包括：</p>
+    <ul>
+      <li>设备名称、主机名、操作系统、架构、IP 地址、位置、分组、在线状态和硬件信息；</li>
+      <li>CPU、内存、交换空间、负载、磁盘、网络流量、连接数等运行指标；</li>
+      <li>磁盘挂载信息、进程名称、进程所属用户名、进程状态和系统服务状态；</li>
+      <li>HTTP、Ping、TCPing 等网络服务的名称、目标地址、可用性、延迟、状态码及证书到期时间；</li>
+      <li>告警规则、告警内容、严重级别、处理状态、发生时间、确认人员等告警信息。</li>
+    </ul>
+    <p>这些数据用于提供概览、设备详情、服务可用性、历史趋势和告警查看功能。应用也可根据您的操作向目标服务器发起“立即检查服务”或“确认告警”请求。</p>
+    <p class="notice">部分监控数据可能包含个人信息、内部网络信息或商业敏感信息。请确保您有权查看和处理这些数据，并为 API Token 配置满足实际用途的最小权限。</p>
+
+    <h3>1.3 应用设置</h3>
+    <p>应用会在设备本地保存自动刷新开关、刷新间隔、是否显示完整 Token、主题颜色和颜色模式等设置，以保持您的使用偏好。</p>
+
+    <h3>1.4 剪贴板</h3>
+    <p>仅当您主动点击“复制 Token”时，应用才会将当前 API Token 写入系统剪贴板。应用不会为该功能读取剪贴板内容。剪贴板内容可能被系统或其他具备相应能力的应用访问，请您复制后妥善保管，并避免在不受信任的应用中粘贴。</p>
+
+    <h2>2. 设备权限与系统能力</h2>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>权限或能力</th>
+            <th>使用场景</th>
+            <th>是否必要</th>
+            <th>拒绝或关闭后的影响</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>网络访问</td>
+            <td>连接您指定的监控服务器，验证 Token，读取监控数据以及提交您主动触发的操作。</td>
+            <td>核心功能所需</td>
+            <td>无法绑定服务器、刷新监控数据或执行服务器操作。</td>
+          </tr>
+          <tr>
+            <td>相机权限</td>
+            <td>仅在您选择“扫码绑定”后，用于扫描 Web 控制台提供的绑定二维码。</td>
+            <td>可选</td>
+            <td>无法实时扫码，但仍可手动输入，或通过系统图片选择器选取二维码图片。</td>
+          </tr>
+          <tr>
+            <td>系统图片选择器</td>
+            <td>由您主动选择一张包含绑定二维码的图片进行识别。</td>
+            <td>可选</td>
+            <td>无法从图片识别二维码，但不影响手动输入或已授权的相机扫码。</td>
+          </tr>
+          <tr>
+            <td>系统剪贴板</td>
+            <td>在您主动点击复制时写入 API Token。</td>
+            <td>可选</td>
+            <td>不影响监控功能，可手动管理 Token。</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+    <p>相机画面和您选取的二维码图片仅用于识别绑定信息。星辰云巡的应用代码不会将相机画面或图片上传至由我们运营的服务器。您可以在系统设置中撤回相机权限，撤回后不影响手动绑定和其他基础功能。</p>
+
+    <h2>3. 信息传输、存储与安全</h2>
+
+    <h3>3.1 传输对象</h3>
+    <p>服务器地址、API Token 和监控请求会直接发送至您指定的服务器。服务器可能由您本人、您的组织或第三方服务商运营，我们不控制该服务器如何记录、保存或进一步处理请求信息。请您查阅该服务器运营者的隐私规则和安全说明。</p>
+
+    <h3>3.2 传输安全</h3>
+    <p>应用支持您配置 HTTP 或 HTTPS 地址。<strong>我们强烈建议始终使用可信的 HTTPS 地址。</strong>如果您选择 HTTP，API Token 和监控数据可能在传输过程中面临被监听、篡改或泄露的风险，由此产生的风险需由您自行评估和承担。</p>
+
+    <h3>3.3 本地存储与期限</h3>
+    <p>服务器地址、API Token、Token 权限范围和应用设置会保存在设备本地，直至您解除绑定、清除应用数据或卸载应用。应用从服务器获取的监控数据主要用于当前运行期间展示，不作为由我们运营的云端数据进行保存。</p>
+
+    <h3>3.4 系统备份与恢复</h3>
+    <p>应用支持 HarmonyOS 系统提供的备份与恢复能力。根据您的设备和系统备份设置，本地应用数据可能由系统备份服务进行备份，并在换机、重装或恢复设备时还原，其中可能包含服务器地址、API Token 和应用设置。相关备份由系统服务按照其隐私规则处理。您可以通过设备的备份设置管理相关功能。</p>
+
+    <h3>3.5 安全建议</h3>
+    <ul>
+      <li>使用只读或最小权限 Token，仅在确有需要时授予告警写入等权限；</li>
+      <li>使用 HTTPS，并确认服务器证书和域名可信；</li>
+      <li>不要与他人共享 Token，不要在公共设备上长期保存 Token；</li>
+      <li>怀疑 Token 泄露时，请立即在服务器端撤销并重新生成；</li>
+      <li>使用设备锁屏、系统加密和最新安全更新保护本地数据。</li>
+    </ul>
+
+    <h2>4. 信息共享、转让与公开披露</h2>
+    <p>我们不会出售您的个人信息。除以下情形外，我们不会向第三方共享、转让或公开披露由应用处理的信息：</p>
+    <ul>
+      <li>根据您的主动选择，将请求发送至您指定的监控服务器；</li>
+      <li>使用 HarmonyOS 提供的相机授权、图片选择、二维码识别、剪贴板、备份与恢复等系统能力完成您请求的功能；</li>
+      <li>根据法律法规、诉讼争议解决需要，或行政、司法机关依法提出的要求进行必要处理；</li>
+      <li>为保护您、我们或其他人的生命、财产等重大合法权益，在法律允许范围内进行必要处理。</li>
+    </ul>
+    <p>当前版本未集成广告、用户行为分析或由我们运营的云端账号系统。</p>
+
+    <h2>5. 您如何管理信息与权限</h2>
+    <ul>
+      <li><strong>查看或修改绑定信息：</strong>可在应用“设置”中查看服务器信息并重新绑定。</li>
+      <li><strong>删除绑定信息：</strong>可在应用“设置”中选择“解除绑定”，清除本地保存的服务器地址、API Token 和 Token 权限范围。</li>
+      <li><strong>删除全部本地数据：</strong>可通过系统应用设置清除星辰云巡的数据，或卸载应用。</li>
+      <li><strong>管理相机权限：</strong>可在系统设置的应用权限页面随时授权或撤回。</li>
+      <li><strong>删除服务器端数据：</strong>星辰云巡不直接控制您指定服务器中的数据。您应使用目标服务器提供的管理功能，或联系其运营者处理。</li>
+    </ul>
+    <p>请注意，系统备份中已有的数据可能在恢复后重新出现。您可同时检查并管理设备的系统备份设置。</p>
+
+    <h2>6. 未成年人保护</h2>
+    <p>星辰云巡是面向服务器管理与运维场景的工具，不以未成年人为目标用户。未满十四周岁的未成年人不应自行配置服务器凭据或使用本应用；确有使用需要的，应在监护人同意和指导下进行。若监护人发现未成年人未经同意处理了相关信息，可通过本政策载明的方式联系我们。</p>
+
+    <h2>7. 本政策的更新</h2>
+    <p>我们可能因功能变化、法律法规要求或安全需要更新本政策。对于对您权益有重大影响的变更，我们会通过应用内提示、版本说明或其他适当方式向您说明。更新后的政策自标明的生效日期起施行；若您不同意更新内容，请停止使用相关功能并删除本地数据。</p>
+
+    <h2>8. 联系我们</h2>
+    <p>如果您对本政策、个人信息处理或数据权利有任何疑问、意见或请求，可以通过以下方式联系我们：</p>
+    <p><strong>运营者：</strong>衣峻辰</p>
+    <p><strong>联系邮箱：</strong><a href="mailto:1649364566@qq.com">1649364566@qq.com</a></p>
+    <p>我们将在收到您的请求并完成必要的身份核验后，于十五个工作日内予以回复。如果您认为我们的处理行为损害了您的合法权益，您也可以向有权监管部门投诉，或依法向有管辖权的人民法院提起诉讼。</p>
+
+    <p class="footer">星辰云巡 · 让服务器状态清晰可见</p>
+  </main>
+</body>
+</html>
