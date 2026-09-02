@@ -12,6 +12,7 @@ import { AppLifecycle } from '../utils/AppLifecycle'
 import { appUpdate, AppUpdateOutcome } from '../utils/AppUpdate'
 
 const APP_GALLERY_LINK: string = 'https://appgallery.huawei.com/app/detail?id=cn.xciy.xcyx'
+const MONITOR_PROJECT_LINK: string = 'https://github.com/Pstarchen/monitor-for-server'
 
 @Entry
 @Component
@@ -266,6 +267,19 @@ struct About {
     }
   }
 
+  private async openMonitorProject(): Promise<void> {
+    const context: common.UIAbilityContext | null = AppLifecycle.getAbilityContext()
+    if (context === null) {
+      this.toast('暂时无法打开项目地址')
+      return
+    }
+    try {
+      await context.openLink(MONITOR_PROJECT_LINK)
+    } catch (_) {
+      this.toast('项目地址暂时无法打开')
+    }
+  }
+
   private titleBarOptions(): HdsNavigationTitleBarOptions {
     const content: TitleBarContentOptions = {
       title: { mainTitle: '关于星辰云巡' }
@@ -312,6 +326,7 @@ struct About {
                   .layoutWeight(5)
                   Column() {
                     this.PolicySection()
+                    this.ServiceSection()
                     this.SupportSection()
                   }
                   .layoutWeight(7)
@@ -321,6 +336,7 @@ struct About {
               } else {
                 this.BrandCard()
                 this.PolicySection()
+                this.ServiceSection()
                 this.SupportSection()
               }
             }
@@ -543,6 +559,52 @@ struct About {
   }
 
   @Builder
+  private ServiceSection() {
+    Column() {
+      this.SectionTitle('服务信息', '连接方式、安全边界与项目来源')
+      Column() {
+        AboutActionRow({
+          title: '数据来源',
+          subtitle: '通过 REST API / PAT 获取监控数据',
+          icon: $r('sys.symbol.share'),
+          accent: this.palette().primary,
+          iconBackground: this.palette().iconPrimary,
+          showDivider: true,
+          showChevron: false
+        })
+        AboutActionRow({
+          title: '安全提示',
+          subtitle: '建议使用只读 Token，降低凭据权限范围',
+          icon: $r('sys.symbol.lock'),
+          accent: this.palette().success,
+          iconBackground: this.palette().iconSuccess,
+          showDivider: true,
+          showChevron: false
+        })
+        AboutActionRow({
+          title: '星辰监控项目',
+          subtitle: 'GitHub 开源项目 · monitor-for-server',
+          icon: $r('sys.symbol.share'),
+          accent: this.palette().purple,
+          iconBackground: this.palette().iconPurple,
+          showChevron: true,
+          onActivate: () => { this.openMonitorProject() }
+        })
+      }
+      .width('100%')
+      .clip(true)
+      .backgroundColor(this.palette().card)
+      .borderRadius(26)
+      .border({ width: 1, color: this.palette().border, radius: 26 })
+      .shadow({ radius: 18, color: this.palette().shadowStrong, offsetY: 7 })
+    }
+    .width('100%')
+    .margin({ top: 28 })
+    .opacity(this.supportStageVisible ? 1 : 0)
+    .translate({ y: this.supportStageVisible ? 0 : 26 })
+  }
+
+  @Builder
   private SupportSection() {
     Column() {
       this.SectionTitle('支持我们', '你的每一次反馈，都让星光更明亮')
@@ -616,6 +678,7 @@ struct AboutActionRow {
   @Prop accent: ResourceColor = '#000000'
   @Prop iconBackground: ResourceColor = '#00000000'
   @Prop showDivider: boolean = false
+  @Prop showChevron: boolean = false
   @Prop loading: boolean = false
   @StorageLink('themeId') themeId: ThemeId = 'gold'
   @StorageLink('isDarkMode') isDarkMode: boolean = false
@@ -663,8 +726,8 @@ struct AboutActionRow {
             .width(18)
             .height(18)
             .color(this.accent)
-        } else {
-          SymbolGlyph($r('sys.symbol.chevron_right'))
+         } else if (this.showChevron) {
+           SymbolGlyph($r('sys.symbol.chevron_right'))
             .fontSize(14)
             .fontColor([this.isPressed ? this.accent : this.palette().muted])
             .opacity(this.isPressed ? 1 : 0.48)
@@ -681,8 +744,8 @@ struct AboutActionRow {
       })
       .scale({ x: this.isPressed ? 0.985 : (this.isHovered ? 1.005 : 1), y: this.isPressed ? 0.985 : (this.isHovered ? 1.005 : 1) })
       .animation({ duration: 170, curve: curves.springMotion(0.62, 0.52) })
-      .focusable(true)
-      .focusOnTouch(true)
+       .focusable(this.showChevron)
+       .focusOnTouch(this.showChevron)
       .onHover((isHover: boolean, _event: HoverEvent) => {
         this.isHovered = isHover
       })

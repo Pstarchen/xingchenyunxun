@@ -438,6 +438,7 @@ export struct ServiceAvailabilityView {
             canRunChecks: this.canRunChecks,
              runningServiceId: this.runningServiceId,
              transitionId: this.transitionId(service.id),
+             topInset: this.topInset,
              bottomInset: this.bottomInset,
              layoutSize: this.layoutSize,
              windowWidthVp: this.windowWidthVp,

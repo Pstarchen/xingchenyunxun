@@ -1,7 +1,9 @@
 import { preferences } from '@kit.ArkData'
 import { common } from '@kit.AbilityKit'
+import { LegacyConnectionSnapshot } from '../model/ControllerProfileModels'
 import { MonitorConnection } from '../model/MonitorModels'
 import { ColorModePreference, ThemeId, ThemeSettings } from '../model/ThemeModels'
+import { SecureCredentialStore } from './SecureCredentialStore'
 
 const STORE_NAME: string = 'xingchenyunxun'
 const BASE_URL_KEY: string = 'monitor_base_url'
@@ -13,6 +15,7 @@ const SHOW_SENSITIVE_VALUES_KEY: string = 'setting_show_sensitive_values'
 const THEME_ID_KEY: string = 'setting_theme_id'
 const COLOR_MODE_PREFERENCE_KEY: string = 'setting_color_mode_preference'
 const AGREEMENT_VERSION_KEY: string = 'agreement_accepted_version'
+const LEGACY_CREDENTIAL_ALIAS: string = 'legacy:active-connection'
 
 export interface MonitorSettings {
   autoRefreshEnabled: boolean
@@ -23,6 +26,7 @@ export interface MonitorSettings {
 export class MonitorStorage {
   private static instance: MonitorStorage = new MonitorStorage()
   private store: preferences.Preferences | null = null
+  private credentials: SecureCredentialStore = new SecureCredentialStore()
 
   static getInstance(): MonitorStorage {
     return MonitorStorage.instance
@@ -40,32 +44,80 @@ export class MonitorStorage {
   }
 
   async loadConnection(): Promise<MonitorConnection | null> {
-    if (!this.store) {
+    const currentStore: preferences.Preferences | null = this.store
+    if (currentStore === null) {
       return null
     }
     try {
-      const baseUrl = String(await this.store.get(BASE_URL_KEY, ''))
-      const token = String(await this.store.get(TOKEN_KEY, ''))
-      if (!baseUrl || !token) return null
-      const scopesValue = String(await this.store.get(SCOPES_KEY, ''))
-      const scopes = scopesValue.split('\n').map((value: string) => value.trim()).filter((value: string) => value.length > 0)
-      return scopes.length ? { baseUrl, token, scopes } : { baseUrl, token }
+      const baseUrl: string = String(await currentStore.get(BASE_URL_KEY, ''))
+      const storedToken: string = String(await currentStore.get(TOKEN_KEY, ''))
+      const token: string = storedToken.length > 0 ? storedToken :
+        await this.credentials.loadCredential(LEGACY_CREDENTIAL_ALIAS)
+      if (baseUrl.length === 0 || token.length === 0) {
+        return null
+      }
+      const scopesValue: string = String(await currentStore.get(SCOPES_KEY, ''))
+      const sourceScopes: string[] = scopesValue.split('\n')
+      const scopes: string[] = []
+      for (let index: number = 0; index < sourceScopes.length; index++) {
+        const scope: string = sourceScopes[index].trim()
+        if (scope.length > 0 && scopes.indexOf(scope) < 0) {
+          scopes.push(scope)
+        }
+      }
+      const connection: MonitorConnection = { baseUrl: baseUrl, token: token, scopes: scopes }
+      return connection
     } catch (_) {
       return null
     }
   }
 
+  async loadLegacyConnectionSnapshot(): Promise<LegacyConnectionSnapshot | undefined> {
+    const currentStore: preferences.Preferences | null = this.store
+    if (currentStore === null) {
+      return undefined
+    }
+    try {
+      const baseUrl: string = String(await currentStore.get(BASE_URL_KEY, ''))
+      const storedToken: string = String(await currentStore.get(TOKEN_KEY, ''))
+      const token: string = storedToken.length > 0 ? storedToken :
+        await this.credentials.loadCredential(LEGACY_CREDENTIAL_ALIAS)
+      if (baseUrl.length === 0 || token.length === 0) {
+        return undefined
+      }
+      const scopesValue: string = String(await currentStore.get(SCOPES_KEY, ''))
+      const sourceScopes: string[] = scopesValue.split('\n')
+      const scopes: string[] = []
+      for (let index: number = 0; index < sourceScopes.length; index++) {
+        const scope: string = sourceScopes[index].trim()
+        if (scope.length > 0 && scopes.indexOf(scope) < 0) {
+          scopes.push(scope)
+        }
+      }
+      const snapshot: LegacyConnectionSnapshot = new LegacyConnectionSnapshot()
+      snapshot.baseUrl = baseUrl
+      snapshot.token = token
+      snapshot.scopes = scopes
+      return snapshot
+    } catch (_) {
+      return undefined
+    }
+  }
+
   async saveConnection(connection: MonitorConnection): Promise<void> {
-    if (!this.store) {
+    const currentStore: preferences.Preferences | null = this.store
+    if (currentStore === null) {
       return
     }
     try {
-      await this.store.put(BASE_URL_KEY, connection.baseUrl)
-      await this.store.put(TOKEN_KEY, connection.token)
-      await this.store.put(SCOPES_KEY, (connection.scopes ?? []).join('\n'))
-      await this.store.flush()
+      if (!await this.credentials.saveCredential(LEGACY_CREDENTIAL_ALIAS, connection.token)) {
+        return
+      }
+      await currentStore.put(BASE_URL_KEY, connection.baseUrl)
+      await currentStore.delete(TOKEN_KEY)
+      await currentStore.put(SCOPES_KEY, (connection.scopes ?? []).join('\n'))
+      await currentStore.flush()
     } catch (_) {
-      // Keep the in-memory connection active when persistence is unavailable.
     }
   }
 
@@ -150,17 +202,22 @@ export class MonitorStorage {
     }
   }
 
-  async clearConnection(): Promise<void> {
-    if (!this.store) {
-      return
+  async clearConnection(): Promise<boolean> {
+    const currentStore: preferences.Preferences | null = this.store
+    if (currentStore === null) {
+      return false
     }
     try {
-      await this.store.delete(BASE_URL_KEY)
-      await this.store.delete(TOKEN_KEY)
-      await this.store.delete(SCOPES_KEY)
-      await this.store.flush()
+      const credentialCleared: boolean = await this.credentials.deleteCredential(LEGACY_CREDENTIAL_ALIAS)
+      await currentStore.delete(BASE_URL_KEY)
+      await currentStore.delete(TOKEN_KEY)
+      await currentStore.delete(SCOPES_KEY)
+      await currentStore.flush()
+      const preferencesCleared: boolean = (await currentStore.get(BASE_URL_KEY, '')) === '' &&
+        (await currentStore.get(TOKEN_KEY, '')) === '' && (await currentStore.get(SCOPES_KEY, '')) === ''
+      return credentialCleared && preferencesCleared
     } catch (_) {
-      // Clearing local storage is best effort; no credential is sent after unbind.
+      return false
     }
   }
 }

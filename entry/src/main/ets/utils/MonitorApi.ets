@@ -1,18 +1,37 @@
 import { http } from '@kit.NetworkKit'
 import { util } from '@kit.ArkTS'
+import { BusinessError } from '@kit.BasicServicesKit'
 import { MonitorConnection, Dashboard, Device, Metric, AlertEvent, NetworkService, ServiceCheckResult } from '../model/MonitorModels'
+import { normalizeBindingTokenValue } from './BindingPayloadParser'
+import { JsonRecord, StrictJson } from './StrictJson'
 
-interface ErrorResponse {
-  message?: string
+export type MonitorApiErrorKind = 'UNAUTHORIZED' | 'FORBIDDEN' | 'UNSUPPORTED' | 'TIMEOUT' |
+  'CURSOR_INVALID' | 'CONFLICT' | 'PROVIDER_UNAVAILABLE' | 'SERVER' | 'NETWORK'
+
+export class MonitorApiErrorBody {
+  message: string = ''
+  code: string = ''
+  requiredScope: string = ''
+}
+
+class AlertAcknowledgeRequest {
+  ids: number[] = []
 }
 
 export class MonitorApiError extends Error {
   status: number
+  kind: MonitorApiErrorKind
+  code: string
+  requiredScope: string
 
-  constructor(message: string, status: number = 0) {
+  constructor(message: string, status: number = 0, kind: MonitorApiErrorKind = 'NETWORK', code: string = '',
+    requiredScope: string = '') {
     super(message)
     this.name = 'MonitorApiError'
     this.status = status
+    this.kind = kind
+    this.code = code
+    this.requiredScope = requiredScope
   }
 }
 
@@ -42,49 +61,142 @@ export class MonitorApi {
     return result ? JSON.stringify(result) : ''
   }
 
-  private async request<T>(path: string, method: http.RequestMethod = http.RequestMethod.GET): Promise<T> {
+  private parseErrorBody(raw: string): MonitorApiErrorBody {
+    const errorBody: MonitorApiErrorBody = new MonitorApiErrorBody()
+    if (raw.trim().length === 0) {
+      return errorBody
+    }
+    try {
+      const source: JsonRecord = StrictJson.parseRecord(raw, 'error')
+      errorBody.message = StrictJson.optionalString(source, 'message', 'error')
+      errorBody.code = StrictJson.optionalString(source, 'code', 'error')
+      errorBody.requiredScope = StrictJson.optionalString(source, 'requiredScope', 'error')
+      const fallback: string = StrictJson.optionalString(source, 'error', 'error')
+      errorBody.message = errorBody.message.length > 0 ? errorBody.message : fallback
+    } catch (_) {
+      return errorBody
+    }
+    return errorBody
+  }
+
+  private errorKind(status: number, code: string): MonitorApiErrorKind {
+    if (status === 401) return 'UNAUTHORIZED'
+    if (status === 403) return 'FORBIDDEN'
+    if (status === 404 || status === 501) return 'UNSUPPORTED'
+    if (status === 408 || status === 504) return 'TIMEOUT'
+    if (status === 409) return 'CONFLICT'
+    if (status === 410 || code === 'CURSOR_INVALID' || code === 'CURSOR_EXPIRED') return 'CURSOR_INVALID'
+    if (code === 'PUSH_PROVIDER_DISABLED' || code === 'PROVIDER_NOT_CONFIGURED') return 'PROVIDER_UNAVAILABLE'
+    return 'SERVER'
+  }
+
+  private defaultErrorMessage(status: number, kind: MonitorApiErrorKind, requiredScope: string): string {
+    if (kind === 'UNAUTHORIZED') return 'Token 已失效，请重新绑定'
+    if (kind === 'FORBIDDEN' && requiredScope.length > 0) return `当前 Token 缺少权限：${requiredScope}`
+    if (kind === 'FORBIDDEN') return '当前 Token 缺少所需权限'
+    if (kind === 'UNSUPPORTED') return '当前服务器版本不支持此功能'
+    if (kind === 'TIMEOUT') return '请求超时，请稍后重试'
+    if (kind === 'CURSOR_INVALID') return '分页游标已失效，请刷新列表'
+    if (kind === 'PROVIDER_UNAVAILABLE') return '服务器推送服务尚未配置'
+    return `请求失败（${status}）`
+  }
+
+  private errorMessage(body: MonitorApiErrorBody, status: number, kind: MonitorApiErrorKind): string {
+    if (kind === 'UNAUTHORIZED') {
+      return this.defaultErrorMessage(status, kind, body.requiredScope)
+    }
+    if (kind === 'FORBIDDEN' && body.requiredScope.length > 0) {
+      return `当前 Token 缺少权限：${body.requiredScope}`
+    }
+    return body.message.length > 0 ? body.message : this.defaultErrorMessage(status, kind, body.requiredScope)
+  }
+
+  async requestJson(path: string, method: http.RequestMethod = http.RequestMethod.GET,
+    body: Object | undefined = undefined): Promise<string> {
     const request = http.createHttp()
     try {
-      const options: http.HttpRequestOptions = {
-        method,
-        header: {
-          'Accept': 'application/json',
-          'Authorization': `Bearer ${this.connection.token}`
-        },
-        // Keep JSON parsing stable across HarmonyOS SDKs. HttpResponse.result
-        // may otherwise be returned as an Object or ArrayBuffer.
-        expectDataType: http.HttpDataType.STRING,
-        usingCache: false,
-        connectTimeout: 10_000,
-        readTimeout: 15_000
+      const token: string = normalizeBindingTokenValue(this.connection.token)
+      if (token.length === 0) {
+        throw new MonitorApiError('Token 已失效，请重新绑定', 401, 'UNAUTHORIZED')
       }
-      const response = await request.request(`${this.root()}/api${path}`, options)
-      const raw = this.responseText(response.result)
-      let parsed: T = JSON.parse('{}') as T
-      if (response.responseCode < 200 || response.responseCode >= 300) {
-        let message = `请求失败（${response.responseCode}）`
-        try {
-          const errorBody: ErrorResponse = JSON.parse(raw) as ErrorResponse
-          if (errorBody.message) message = errorBody.message
-        } catch (_) {
-          // Keep the status-based message when the server response is not JSON.
+      const headers: Record<string, string> = body === undefined ? {
+        'Accept': 'application/json',
+        'Authorization': `Bearer ${token}`
+      } : {
+        'Accept': 'application/json',
+        'Authorization': `Bearer ${token}`,
+        'Content-Type': 'application/json'
+      }
+      let options: http.HttpRequestOptions
+      if (body === undefined) {
+        options = {
+          method: method,
+          header: headers,
+          expectDataType: http.HttpDataType.STRING,
+          usingCache: false,
+          connectTimeout: 10_000,
+          readTimeout: 15_000
         }
-        throw new MonitorApiError(message, response.responseCode)
+      } else {
+        options = {
+          method: method,
+          header: headers,
+          extraData: JSON.stringify(body),
+          expectDataType: http.HttpDataType.STRING,
+          usingCache: false,
+          connectTimeout: 10_000,
+          readTimeout: 15_000
+        }
       }
-      if (raw) parsed = JSON.parse(raw) as T
-      return parsed
+      const response: http.HttpResponse = await request.request(`${this.root()}/api${path}`, options)
+      const raw: string = this.responseText(response.result)
+      const status: number = Number(response.responseCode)
+      if (status < 200 || status >= 300) {
+        const errorBody: MonitorApiErrorBody = this.parseErrorBody(raw)
+        const kind: MonitorApiErrorKind = this.errorKind(status, errorBody.code)
+        const message: string = this.errorMessage(errorBody, status, kind)
+        throw new MonitorApiError(message, status, kind, errorBody.code, errorBody.requiredScope)
+      }
+      return raw
     } catch (error) {
-      if (error instanceof MonitorApiError) throw error
-      throw new MonitorApiError('网络异常，请检查服务器地址和网络连接')
+      if (error instanceof MonitorApiError) {
+        throw error
+      }
+      const businessError: BusinessError = error as BusinessError
+      if (businessError.code === 2300028) {
+        throw new MonitorApiError('请求超时，请稍后重试', 0, 'TIMEOUT')
+      }
+      throw new MonitorApiError('网络异常，请检查服务器地址和网络连接', 0, 'NETWORK')
     } finally {
       request.destroy()
     }
   }
 
+  async getJson(path: string): Promise<string> {
+    return this.requestJson(path, http.RequestMethod.GET)
+  }
+
+  async postJson(path: string, body: Object | undefined = undefined): Promise<string> {
+    return this.requestJson(path, http.RequestMethod.POST, body)
+  }
+
+  async putJson(path: string, body: Object): Promise<string> {
+    return this.requestJson(path, http.RequestMethod.PUT, body)
+  }
+
+  async deleteJson(path: string): Promise<string> {
+    return this.requestJson(path, http.RequestMethod.DELETE)
+  }
+
+  private async request<T>(path: string, method: http.RequestMethod = http.RequestMethod.GET): Promise<T> {
+    const raw: string = await this.requestJson(path, method)
+    if (raw.length === 0) {
+      return JSON.parse('{}') as T
+    }
+    return JSON.parse(raw) as T
+  }
+
   async checkConnection(): Promise<Dashboard> {
-    // API Tokens are deliberately blocked from the browser-session /auth/me
-    // endpoint. Dashboard is the lightweight authenticated read probe exposed
-    // to PAT clients and also validates the scopes needed by the app.
     return this.request<Dashboard>('/dashboard')
   }
 
@@ -129,5 +241,12 @@ export class MonitorApi {
 
   async acknowledgeAlert(id: number): Promise<AlertEvent> {
     return this.request<AlertEvent>(`/alerts/${id}/acknowledge`, http.RequestMethod.POST)
+  }
+
+  async acknowledgeAlerts(ids: number[]): Promise<AlertEvent[]> {
+    const request: AlertAcknowledgeRequest = new AlertAcknowledgeRequest()
+    request.ids = ids.slice()
+    const raw: string = await this.postJson('/alerts/acknowledge', request)
+    return JSON.parse(raw) as AlertEvent[]
   }
 }

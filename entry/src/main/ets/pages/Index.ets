@@ -2,10 +2,18 @@ import { hdsMaterial, HdsNavDestination, HdsNavigation, HdsNavigationAttribute, 
 import { curves, SymbolGlyphModifier } from '@kit.ArkUI'
 import { abilityAccessCtrl, common, ConfigurationConstant } from '@kit.AbilityKit'
 import { pasteboard } from '@kit.BasicServicesKit'
-import { AlertEvent, Dashboard, Device, DeviceStatus, Metric, MonitorConnection, NetworkService, ServiceMetric } from '../model/MonitorModels'
+import { AlertEvent, AlertSeverity, AlertStatus, Dashboard, Device, DeviceStatus, Metric, MonitorConnection, NetworkService, ServiceMetric } from '../model/MonitorModels'
+import { BindingMetadata, ControllerProfile } from '../model/ControllerProfileModels'
+import { ClientBootstrap } from '../model/BootstrapModels'
+import { DeviceDiagnostics, DiskDiagnostic, MetricHistoryPoint, MetricHistoryResponse, NetworkInterfaceDiagnostic, ProcessDiagnostic } from '../model/DiagnosticModels'
 import { MonitorApi, MonitorApiError } from '../utils/MonitorApi'
 import { MonitorSettings, MonitorStorage } from '../utils/MonitorStorage'
 import { chooseBindingQr, normalizeBindingBaseUrl, normalizeBindingToken, parseBindingPayload } from '../utils/QrCodeReader'
+import { bindingMatchesBootstrap } from '../utils/BindingPayloadParser'
+import { MonitorRepository } from '../service/MonitorRepository'
+import { ProfileSessionCoordinator, ProfileSessionSnapshot } from '../service/ProfileSessionCoordinator'
+import { RealtimeConnectionState, RealtimeSession } from '../service/RealtimeSession'
+import { RealtimeEnvelope } from '../model/RealtimeModels'
 import { normalizePercentSeries, ReferenceDashboardCard, ReferenceHeaderActionButton, ReferenceIcon, ReferenceMetricTrendChart, ReferenceMonitorCard, ReferenceSettingCard, ReferenceSettingSwitchCard } from '../view/ReferenceComponents'
 import { ServiceAvailabilityView } from '../view/ServiceAvailabilityView'
 import { ColorModePreference, getThemePalette, THEME_OPTIONS, ThemeId, ThemeOption, ThemePalette } from '../model/ThemeModels'
@@ -14,6 +22,8 @@ import { AppLifecycle } from '../utils/AppLifecycle'
 import { getContentMaxWidth, getNavigationWidth, getPageHorizontalPadding, getSheetWidth, getTrendChartHeight, LayoutSize } from '../model/ResponsiveLayout'
 
 type AppPage = 'overview' | 'devices' | 'services' | 'alerts' | 'settings'
+type AlertStatusFilter = 'ACTIVE' | 'ALL' | AlertStatus
+type AlertSeverityFilter = 'ALL' | AlertSeverity
 const DEVICE_DETAIL_ROUTE_PREFIX: string = 'device-detail:'
 
 let COLORS: ThemePalette = getThemePalette('gold', false)
@@ -23,6 +33,8 @@ let COLORS: ThemePalette = getThemePalette('gold', false)
 struct Index {
   @State page: AppPage = 'overview'
   @State connection: MonitorConnection | null = null
+  @State profiles: ControllerProfile[] = []
+  @State activeProfileId: string = ''
   @State baseUrlInput: string = ''
   @State tokenInput: string = ''
   @State dashboard: Dashboard | null = null
@@ -38,9 +50,14 @@ struct Index {
   @State bindingNotice: string = ''
   @State showBindingSheet: boolean = false
   @State showAppearanceSheet: boolean = false
+  @State showProfilesSheet: boolean = false
   @State showToken: boolean = false
   @State refreshAngle: number = 0
   @State alertRevision: number = 0
+  @State alertStatusFilter: AlertStatusFilter = 'ALL'
+  @State alertSeverityFilter: AlertSeverityFilter = 'ALL'
+  @State alertBatchBusy: boolean = false
+  @State realtimeState: RealtimeConnectionState = 'DISCONNECTED'
   @State deviceRevision: number = 0
   @State serviceRevision: number = 0
   @State runningServiceId: number = -1
@@ -76,12 +93,19 @@ struct Index {
   @State agreementSaving: boolean = false
   @State agreementExiting: boolean = false
   @State agreementErrorMessage: string = ''
+  @State profileActionBusy: boolean = false
 
   private context: common.Context | null = null
   private storage: MonitorStorage = MonitorStorage.getInstance()
+  private profileCoordinator: ProfileSessionCoordinator = ProfileSessionCoordinator.shared()
   private refreshTimer: number = -1
+  private realtimeRefreshTimer: number = -1
+  private realtimeSession: RealtimeSession | undefined = undefined
   private pageEntranceTimer: number = -1
   private dataRequesting: boolean = false
+  private requestReloadAfterCurrent: boolean = false
+  private sessionGeneration: number = 0
+  private pendingBinding: BindingMetadata | undefined = undefined
   private pageEntranceToken: number = 0
   private tabsController: HdsTabsController = new HdsTabsController()
   private overviewScroller: Scroller = new Scroller()
@@ -120,6 +144,7 @@ struct Index {
   }
 
   aboutToDisappear(): void {
+    this.stopRealtime()
     if (this.refreshTimer >= 0) {
       clearInterval(this.refreshTimer)
       this.refreshTimer = -1
@@ -143,6 +168,18 @@ struct Index {
 
   onPageShow(): void {
     if (this.agreementGateState === 'required') this.showBindingSheet = true
+    if (this.agreementGateState === 'accepted' && this.connection) {
+      this.loadData(true)
+      this.startPolling()
+    }
+  }
+
+  onPageHide(): void {
+    this.stopRealtime()
+    if (this.refreshTimer >= 0) {
+      clearInterval(this.refreshTimer)
+      this.refreshTimer = -1
+    }
   }
 
   private async initialize(): Promise<void> {
@@ -159,12 +196,9 @@ struct Index {
       this.autoRefreshEnabled = savedSettings.autoRefreshEnabled
       this.refreshIntervalSeconds = savedSettings.refreshIntervalSeconds
       this.showSensitiveValues = savedSettings.showSensitiveValues
-      const saved = await this.storage.loadConnection()
-      if (saved) {
-        this.connection = saved
-        this.baseUrlInput = saved.baseUrl
-        this.tokenInput = saved.token
-      }
+      const session: ProfileSessionSnapshot = await this.profileCoordinator.initialize(this.context)
+      this.applySessionSnapshot(session)
+      const saved: MonitorConnection | null = this.connection
       if (this.agreementGateState === 'required') {
         this.presentBindingSheet()
       } else if (saved) {
@@ -177,6 +211,25 @@ struct Index {
       this.agreementGateState = 'required'
       this.errorMessage = '本地配置读取失败，请重新绑定服务器'
       this.presentBindingSheet()
+    }
+  }
+
+  private applySessionSnapshot(snapshot: ProfileSessionSnapshot): void {
+    this.stopRealtime()
+    this.profiles = snapshot.profiles.slice()
+    this.activeProfileId = snapshot.activeProfile?.profileId ?? ''
+    this.connection = snapshot.connection ?? null
+    if (this.connection !== null) {
+      this.baseUrlInput = this.connection.baseUrl
+      this.tokenInput = this.connection.token
+    } else {
+      this.baseUrlInput = ''
+      this.tokenInput = ''
+    }
+    if (snapshot.migrationState === 'MIGRATED' && snapshot.message.length > 0) {
+      this.bindingNotice = snapshot.message
+    } else if (snapshot.migrationState === 'RETRY_REQUIRED' && snapshot.message.length > 0) {
+      this.errorMessage = snapshot.message
     }
   }
 
@@ -211,7 +264,15 @@ struct Index {
     return viewportWidth < maximumWidth ? viewportWidth : maximumWidth
   }
 
+  private alertsContentMinHeight(): number {
+    return this.windowHeightVp > 0 ? this.windowHeightVp : 800
+  }
+
   private bindingSheetWidth(): number {
+    return getSheetWidth(this.responsiveWindowWidth(), this.layoutSize, 560, 640)
+  }
+
+  private profilesSheetWidth(): number {
     return getSheetWidth(this.responsiveWindowWidth(), this.layoutSize, 560, 640)
   }
 
@@ -288,8 +349,27 @@ struct Index {
       this.tokenInput = this.connection.token
     }
     this.bindingNotice = ''
+    this.pendingBinding = undefined
     this.showToken = false
     this.presentBindingSheet()
+  }
+
+  private openNewProfileBindingSheet(): void {
+    if (this.agreementGateState !== 'accepted') {
+      this.presentBindingSheet()
+      return
+    }
+    this.baseUrlInput = ''
+    this.tokenInput = ''
+    this.pendingBinding = undefined
+    this.bindingNotice = ''
+    this.showToken = false
+    this.showProfilesSheet = false
+    this.presentBindingSheet()
+  }
+
+  private openProfilesSheet(): void {
+    this.showProfilesSheet = true
   }
 
   private async openAgreementDocument(title: string, url: string): Promise<void> {
@@ -345,10 +425,76 @@ struct Index {
   private startPolling(): void {
     if (this.refreshTimer >= 0) clearInterval(this.refreshTimer)
     this.refreshTimer = -1
+    this.ensureRealtime()
     if (!this.autoRefreshEnabled || !this.connection) return
     this.refreshTimer = setInterval(() => {
       if (this.autoRefreshEnabled && this.connection && !this.isLoading) this.loadData(true)
     }, this.refreshIntervalSeconds * 1000)
+  }
+
+  private currentProfile(): ControllerProfile | undefined {
+    for (const profile of this.profiles) {
+      if (profile.profileId === this.activeProfileId) return profile
+    }
+    return undefined
+  }
+
+  private canUseRealtime(profile: ControllerProfile): boolean {
+    if (!profile.capabilities.includes('realtime-v2')) return false
+    if (!profile.scopes.length) return true
+    return profile.scopes.includes('nezha:*') || profile.scopes.includes('nezha:realtime:*') ||
+      profile.scopes.includes('nezha:realtime:read')
+  }
+
+  private ensureRealtime(): void {
+    const connection: MonitorConnection | null = this.connection
+    const profile: ControllerProfile | undefined = this.currentProfile()
+    if (this.realtimeSession !== undefined || connection === null || profile === undefined ||
+      !this.canUseRealtime(profile)) return
+    const generation: number = this.sessionGeneration
+    const session: RealtimeSession = new RealtimeSession(
+      connection,
+      profile.controllerId,
+      (event: RealtimeEnvelope): void => {
+        if (!this.isCurrentSession(generation)) return
+        profile.lastEventId = event.eventId
+        this.scheduleRealtimeRefresh()
+      },
+      (state: RealtimeConnectionState): void => {
+        if (this.isCurrentSession(generation)) this.realtimeState = state
+      })
+    this.realtimeSession = session
+    session.start(profile.lastEventId)
+  }
+
+  private scheduleRealtimeRefresh(): void {
+    if (this.realtimeRefreshTimer >= 0) return
+    this.realtimeRefreshTimer = setTimeout((): void => {
+      this.realtimeRefreshTimer = -1
+      if (this.connection) this.loadData(true)
+    }, 800)
+  }
+
+  private stopRealtime(): void {
+    if (this.realtimeRefreshTimer >= 0) {
+      clearTimeout(this.realtimeRefreshTimer)
+      this.realtimeRefreshTimer = -1
+    }
+    const session: RealtimeSession | undefined = this.realtimeSession
+    this.realtimeSession = undefined
+    if (session !== undefined) session.stop()
+    this.realtimeState = 'DISCONNECTED'
+  }
+
+  private syncStatusLabel(): string {
+    if (!this.connection) return '尚未同步'
+    if (this.realtimeState === 'CONNECTED') {
+      return this.lastUpdated ? `实时同步 · 更新于 ${this.lastUpdated}` : '实时同步已连接'
+    }
+    if (this.realtimeState === 'CONNECTING' || this.realtimeState === 'RECONNECTING') {
+      return '实时重连中 · 轮询兜底'
+    }
+    return this.lastUpdated ? `轮询同步于 ${this.lastUpdated}` : '等待同步'
   }
 
   private async saveSettings(): Promise<void> {
@@ -412,62 +558,89 @@ struct Index {
   }
 
   private async loadData(background: boolean): Promise<void> {
-    const client = this.api()
+    const requestGeneration: number = this.sessionGeneration
+    const client: MonitorApi | null = this.api()
     if (!client) return
-    if (this.dataRequesting) return
+    if (this.dataRequesting) {
+      this.requestReloadAfterCurrent = true
+      return
+    }
     this.dataRequesting = true
     if (!background) this.isLoading = true
     this.servicesLoading = true
     this.errorMessage = ''
     try {
-      this.dashboard = await client.dashboard()
-      this.deviceList = this.dashboard.devices.slice()
+      const dashboard: Dashboard = await client.dashboard()
+      if (!this.isCurrentSession(requestGeneration)) return
+      this.dashboard = dashboard
+      this.deviceList = dashboard.devices.slice()
       try {
-        this.deviceList = await client.devices()
+        const devices: Device[] = await client.devices()
+        if (this.isCurrentSession(requestGeneration)) this.deviceList = devices
       } catch (_) {
       }
+      if (!this.isCurrentSession(requestGeneration)) return
       this.deviceRevision += 1
       this.overviewCpuText = this.percent(this.overviewCpu())
       this.overviewMemoryText = this.percent(this.overviewMemory())
       this.overviewDiskText = this.percent(this.overviewDisk())
       this.overviewNetworkText = this.rate(this.overviewNetwork())
       try {
-        this.alerts = await client.alerts()
+        const alerts: AlertEvent[] = await client.alerts()
+        if (this.isCurrentSession(requestGeneration)) this.alerts = alerts
       } catch (error) {
-        const alertError = error as MonitorApiError
-        if (alertError?.status === 403) {
-          // Dashboard already includes the recent, server-filtered alerts.
-          // Keep those visible when a token intentionally omits alert:read.
-          this.alerts = this.dashboard?.recentAlerts ?? []
+        const alertError: MonitorApiError = error instanceof MonitorApiError
+          ? error : new MonitorApiError('告警数据加载失败')
+        if (alertError.status === 403) {
+          if (this.isCurrentSession(requestGeneration)) this.alerts = dashboard.recentAlerts
         } else {
-          throw new MonitorApiError(alertError?.message ?? '告警数据加载失败', alertError?.status ?? 0)
+          throw new MonitorApiError(alertError.message, alertError.status)
         }
       }
+      if (!this.isCurrentSession(requestGeneration)) return
       this.alertRevision += 1
       try {
-        this.services = await client.services()
+        const services: NetworkService[] = await client.services()
+        if (this.isCurrentSession(requestGeneration)) this.services = services
         this.serviceRevision += 1
         this.servicesErrorMessage = ''
       } catch (error) {
-        const serviceError = error as MonitorApiError
-        this.servicesErrorMessage = serviceError?.message ?? '服务可用性加载失败'
+        if (this.isCurrentSession(requestGeneration)) {
+          const serviceError: MonitorApiError = error instanceof MonitorApiError
+            ? error : new MonitorApiError('服务可用性加载失败')
+          this.servicesErrorMessage = serviceError.message
+        }
       } finally {
-        this.servicesLoading = false
+        if (this.isCurrentSession(requestGeneration)) this.servicesLoading = false
       }
-      this.lastUpdated = new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })
-     } catch (error) {
-      const apiError = error as MonitorApiError
-      this.errorMessage = apiError?.message ?? '暂时无法连接监控服务'
-      if (apiError?.status === 401 || apiError?.status === 403) this.bindingNotice = 'Token 已失效，请重新绑定'
+      if (this.isCurrentSession(requestGeneration)) {
+        this.lastUpdated = new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })
+      }
+    } catch (error) {
+      if (this.isCurrentSession(requestGeneration)) {
+        const apiError: MonitorApiError = error instanceof MonitorApiError
+          ? error : new MonitorApiError('暂时无法连接监控服务')
+        this.errorMessage = apiError.message
+        if (apiError.status === 401) this.bindingNotice = 'Token 已失效，请重新绑定'
+        if (apiError.status === 403) this.bindingNotice = apiError.message
+      }
     } finally {
-      this.isLoading = false
-      this.servicesLoading = false
-      this.dataRequesting = false
+      if (this.isCurrentSession(requestGeneration)) {
+        this.isLoading = false
+        this.servicesLoading = false
+        this.dataRequesting = false
+      } else {
+        this.dataRequesting = false
+        const reload: boolean = this.requestReloadAfterCurrent
+        this.requestReloadAfterCurrent = false
+        if (reload && this.connection) this.loadData(false)
+      }
     }
   }
 
   private async bind(scannedScopes: string[] | undefined = undefined): Promise<void> {
-    const payload = parseBindingPayload(this.tokenInput)
+    const payload: MonitorConnection | null = parseBindingPayload(this.tokenInput)
+    if (payload !== null) this.pendingBinding = payload.binding
     if (payload && (!this.baseUrlInput || !normalizeBindingToken(this.tokenInput))) {
       this.baseUrlInput = payload.baseUrl
       this.tokenInput = payload.token
@@ -487,20 +660,50 @@ struct Index {
     this.isLoading = true
     this.bindingNotice = ''
     const scopeValues: string[] | undefined = scannedScopes ?? payload?.scopes
-    const candidate: MonitorConnection = scopeValues?.length ? { baseUrl, token, scopes: scopeValues } : { baseUrl, token }
+    const candidate: MonitorConnection = scopeValues?.length
+      ? { baseUrl: baseUrl, token: token, scopes: scopeValues, binding: this.pendingBinding }
+      : { baseUrl: baseUrl, token: token, binding: this.pendingBinding }
     try {
-      const client = new MonitorApi(candidate)
-      await client.checkConnection()
-      await this.storage.saveConnection(candidate)
-       this.connection = candidate
-       this.selectPage('overview')
-       await this.loadData(false)
-       this.startPolling()
-       this.showBindingSheet = false
-       this.toast('已连接到星辰云巡')
+      const client: MonitorApi = new MonitorApi(candidate)
+      const repository: MonitorRepository = new MonitorRepository(client)
+      let bootstrap: ClientBootstrap | undefined = undefined
+      try {
+        bootstrap = await repository.bootstrap()
+      } catch (error) {
+        const bootstrapError: MonitorApiError = error instanceof MonitorApiError
+          ? error : new MonitorApiError('无法读取服务器信息')
+        if (bootstrapError.kind !== 'UNSUPPORTED' || candidate.binding !== undefined) throw bootstrapError
+        await client.checkConnection()
+      }
+      if (bootstrap !== undefined) {
+        if (!bindingMatchesBootstrap(candidate, bootstrap)) {
+          throw new MonitorApiError('二维码绑定信息与服务器不匹配', 409, 'CONFLICT')
+        }
+        if (!this.context) throw new MonitorApiError('应用上下文不可用')
+        await this.profileCoordinator.initialize(this.context)
+        const profile: ControllerProfile | undefined = await this.profileCoordinator.connect(candidate, bootstrap)
+        if (profile === undefined) throw new MonitorApiError('监控空间保存失败，请重试')
+        const snapshot: ProfileSessionSnapshot = await this.profileCoordinator.initialize(this.context)
+        this.sessionGeneration += 1
+        this.applySessionSnapshot(snapshot)
+      } else {
+        await this.storage.saveConnection(candidate)
+        this.sessionGeneration += 1
+        this.connection = candidate
+      }
+      this.dashboard = null
+      this.deviceList = []
+      this.alerts = []
+      this.services = []
+      this.selectPage('overview')
+      await this.loadData(false)
+      this.startPolling()
+      this.showBindingSheet = false
+      this.toast('已连接到星辰云巡')
     } catch (error) {
-      const apiError = error as MonitorApiError
-      this.bindingNotice = apiError?.message ?? '绑定失败，请检查地址和 Token'
+      const apiError: MonitorApiError = error instanceof MonitorApiError
+        ? error : new MonitorApiError('绑定失败，请检查地址和 Token')
+      this.bindingNotice = apiError.message
     } finally {
       this.isLoading = false
     }
@@ -525,6 +728,7 @@ struct Index {
       } else {
         this.baseUrlInput = payload.baseUrl
         this.tokenInput = payload.token
+        this.pendingBinding = payload.binding
         this.bindingNotice = '二维码已识别，正在验证…'
         await this.bind(payload.scopes)
       }
@@ -540,7 +744,22 @@ struct Index {
       clearInterval(this.refreshTimer)
       this.refreshTimer = -1
     }
+    const activeProfileId: string = this.activeProfileId
+    if (activeProfileId.length > 0) {
+      await this.removeProfile(activeProfileId)
+      return
+    }
     await this.storage.clearConnection()
+    this.sessionGeneration += 1
+    this.resetMonitorData()
+    this.toast('已解除绑定')
+  }
+
+  private isCurrentSession(generation: number): boolean {
+    return generation === this.sessionGeneration
+  }
+
+  private resetMonitorData(): void {
     this.connection = null
     this.dashboard = null
     this.deviceList = []
@@ -559,7 +778,87 @@ struct Index {
     this.bindingNotice = ''
     this.pageStack.clear()
     this.selectPage('overview')
-    this.toast('已解除绑定')
+  }
+
+  private activeProfileName(): string {
+    for (const profile of this.profiles) {
+      if (profile.profileId === this.activeProfileId) return profile.controllerName
+    }
+    return this.connection ? '当前监控空间' : '尚未绑定监控空间'
+  }
+
+  private profileSubtitle(profile: ControllerProfile): string {
+    const state: string = profile.profileId === this.activeProfileId ? '当前使用' : '可切换'
+    return `${state} · ${profile.baseUrl}`
+  }
+
+  private async switchProfile(profileId: string): Promise<void> {
+    if (this.profileActionBusy || profileId === this.activeProfileId || !this.context) return
+    this.profileActionBusy = true
+    this.sessionGeneration += 1
+    if (this.refreshTimer >= 0) {
+      clearInterval(this.refreshTimer)
+      this.refreshTimer = -1
+    }
+    try {
+      const connection: MonitorConnection | undefined = await this.profileCoordinator.switchProfile(profileId)
+      if (connection === undefined) {
+        this.bindingNotice = '当前监控空间的安全凭据不可用，请重新绑定'
+        return
+      }
+      const snapshot: ProfileSessionSnapshot = await this.profileCoordinator.initialize(this.context)
+      this.applySessionSnapshot(snapshot)
+      this.dashboard = null
+      this.deviceList = []
+      this.alerts = []
+      this.services = []
+      this.selectPage('overview')
+      this.showProfilesSheet = false
+      await this.loadData(false)
+      this.startPolling()
+      this.toast(`已切换到${this.activeProfileName()}`)
+    } catch (_) {
+      this.bindingNotice = '切换监控空间失败，请重试'
+    } finally {
+      this.profileActionBusy = false
+    }
+  }
+
+  private async removeProfile(profileId: string): Promise<void> {
+    if (this.profileActionBusy || !this.context) return
+    this.profileActionBusy = true
+    this.sessionGeneration += 1
+    if (this.refreshTimer >= 0) {
+      clearInterval(this.refreshTimer)
+      this.refreshTimer = -1
+    }
+    try {
+      if (!await this.profileCoordinator.removeProfile(profileId)) {
+        this.bindingNotice = '删除监控空间失败，请重试'
+        return
+      }
+      const snapshot: ProfileSessionSnapshot = await this.profileCoordinator.initialize(this.context)
+      this.applySessionSnapshot(snapshot)
+      if (this.connection) {
+        this.dashboard = null
+        this.deviceList = []
+        this.alerts = []
+        this.services = []
+        this.selectPage('overview')
+        this.showProfilesSheet = false
+        await this.loadData(false)
+        this.startPolling()
+      } else {
+        this.resetMonitorData()
+        this.showProfilesSheet = false
+        this.presentBindingSheet()
+      }
+      this.toast('监控空间已删除')
+    } catch (_) {
+      this.bindingNotice = '删除监控空间失败，请重试'
+    } finally {
+      this.profileActionBusy = false
+    }
   }
 
   private canAcknowledgeAlerts(): boolean {
@@ -592,6 +891,65 @@ struct Index {
       this.toast('告警已确认')
     } catch (_) {
       this.toast('当前 Token 没有确认告警权限')
+    }
+  }
+
+  private filteredAlerts(): AlertEvent[] {
+    return this.alerts.filter((alert: AlertEvent) => {
+      const statusMatches: boolean = this.alertStatusFilter === 'ALL' ||
+        (this.alertStatusFilter === 'ACTIVE' && alert.status !== 'RESOLVED') ||
+        alert.status === this.alertStatusFilter
+      const severityMatches: boolean = this.alertSeverityFilter === 'ALL' ||
+        alert.severity === this.alertSeverityFilter
+      return statusMatches && severityMatches
+    })
+  }
+
+  private alertFilterSummary(): string {
+    const statusLabel: string = this.alertStatusFilter === 'ALL' ? '全部状态' :
+      this.alertStatusFilter === 'ACTIVE' ? '处理中' :
+        this.alertStatusFilter === 'OPEN' ? '待确认' :
+          this.alertStatusFilter === 'ACKNOWLEDGED' ? '已确认' : '已恢复'
+    const severityLabel: string = this.alertSeverityFilter === 'ALL' ? '全部级别' :
+      this.alertSeverityFilter === 'CRITICAL' ? '严重' :
+        this.alertSeverityFilter === 'WARNING' ? '注意' : '提示'
+    return `${statusLabel} · ${severityLabel}`
+  }
+
+  private confirmableFilteredAlerts(): AlertEvent[] {
+    if (!this.canAcknowledgeAlerts()) return []
+    return this.filteredAlerts().filter((alert: AlertEvent) => alert.status === 'OPEN')
+  }
+
+  private mergeAlertUpdates(source: AlertEvent[], updates: AlertEvent[]): AlertEvent[] {
+    return source.map((item: AlertEvent) => {
+      for (const updated of updates) {
+        if (item.id === updated.id) return updated
+      }
+      return item
+    })
+  }
+
+  private async acknowledgeFilteredAlerts(): Promise<void> {
+    const client: MonitorApi | null = this.api()
+    const candidates: AlertEvent[] = this.confirmableFilteredAlerts()
+    if (!client || !candidates.length || this.alertBatchBusy) return
+    this.alertBatchBusy = true
+    try {
+      const ids: number[] = candidates.map((alert: AlertEvent) => alert.id)
+      const updated: AlertEvent[] = await client.acknowledgeAlerts(ids)
+      this.alerts = this.mergeAlertUpdates(this.alerts, updated)
+      if (this.dashboard) {
+        this.dashboard.recentAlerts = this.mergeAlertUpdates(this.dashboard.recentAlerts, updated)
+      }
+      this.alertRevision += 1
+      this.toast(`已确认 ${updated.length} 条告警`)
+    } catch (error) {
+      const apiError: MonitorApiError = error instanceof MonitorApiError
+        ? error : new MonitorApiError('批量确认失败，请稍后重试')
+      this.toast(apiError.message)
+    } finally {
+      this.alertBatchBusy = false
     }
   }
 
@@ -977,7 +1335,7 @@ struct Index {
        }
        .width(1)
        .height(1)
-       .bindSheet($$this.showAppearanceSheet, this.AppearanceSheet(), {
+        .bindSheet($$this.showAppearanceSheet, this.AppearanceSheet(), {
          height: this.isCompactLayout() ? SheetSize.MEDIUM : '78%',
          detents: this.isCompactLayout() ? [SheetSize.MEDIUM, SheetSize.LARGE] : ['78%'],
          width: this.isCompactLayout() ? '100%' : this.appearanceSheetWidth(),
@@ -987,9 +1345,25 @@ struct Index {
          preferType: this.isCompactLayout() ? SheetType.BOTTOM : SheetType.CENTER,
          mode: this.isCompactLayout() ? SheetMode.OVERLAY : SheetMode.EMBEDDED,
          keyboardAvoidMode: SheetKeyboardAvoidMode.TRANSLATE_AND_SCROLL,
-         title: { title: '外观设置', subtitle: '主题颜色与颜色模式' }
-       })
-     }
+          title: { title: '外观设置', subtitle: '主题颜色与颜色模式' }
+        })
+        Column() {
+          Blank()
+        }
+        .width(1)
+        .height(1)
+        .bindSheet($$this.showProfilesSheet, this.ProfilesSheet(), {
+          height: this.isCompactLayout() ? SheetSize.MEDIUM : '78%',
+          detents: this.isCompactLayout() ? [SheetSize.MEDIUM, SheetSize.LARGE] : ['78%'],
+          width: this.isCompactLayout() ? '100%' : this.profilesSheetWidth(),
+          backgroundColor: COLORS.page,
+          showClose: true,
+          dragBar: this.isCompactLayout(),
+          preferType: this.isCompactLayout() ? SheetType.BOTTOM : SheetType.CENTER,
+          mode: this.isCompactLayout() ? SheetMode.OVERLAY : SheetMode.EMBEDDED,
+          title: { title: '监控空间', subtitle: '切换或管理已绑定的服务器' }
+        })
+      }
     .width('100%')
     .height('100%')
   }
@@ -1002,12 +1376,13 @@ struct Index {
       this.AgreementGateSheet()
     } else {
       Column({ space: 14 }) {
+        Blank().height(this.isCompactLayout() ? 12 : 20)
         LoadingProgress().width(36).height(36).color(COLORS.primary)
         Text('正在读取本地协议状态…').fontSize(13).fontColor(COLORS.secondary)
       }
       .width('100%')
       .height('100%')
-      .justifyContent(FlexAlign.Center)
+      .justifyContent(FlexAlign.Start)
     }
   }
 
@@ -1015,6 +1390,7 @@ struct Index {
   private AgreementGateSheet() {
     Scroll() {
       Column() {
+        Blank().height(this.isCompactLayout() ? 8 : 16)
         ReferenceIcon({
           name: '协议',
           icon: $r('sys.symbol.lock'),
@@ -1092,7 +1468,7 @@ struct Index {
       }
       .width('100%')
       .constraintSize({ minHeight: this.isCompactLayout() ? 420 : 460 })
-      .justifyContent(FlexAlign.Center)
+      .justifyContent(FlexAlign.Start)
       .padding({ left: 28, right: 28, top: 20, bottom: 20 })
     }
     .width('100%')
@@ -1215,7 +1591,10 @@ struct Index {
           TextInput({ placeholder: '例如 https://monitor.example.com', text: this.baseUrlInput })
             .height(50).fontSize(14).backgroundColor(COLORS.surface).borderRadius(13).padding({ left: 14, right: 14 }).margin({ top: 9 })
             .border({ width: 1, color: COLORS.divider, radius: 13 })
-            .onChange((value: string) => { this.baseUrlInput = value })
+            .onChange((value: string) => {
+              this.baseUrlInput = value
+              this.pendingBinding = undefined
+            })
           Row() {
             Column() {
               Text('API Token').fontSize(13).fontWeight(FontWeight.Medium).fontColor(COLORS.text)
@@ -1226,7 +1605,10 @@ struct Index {
           TextInput({ placeholder: '粘贴 API Token', text: this.tokenInput })
             .height(50).fontSize(14).type(this.showToken ? InputType.Normal : InputType.Password).backgroundColor(COLORS.surface).borderRadius(13).padding({ left: 14, right: 14 }).margin({ top: 9 })
             .border({ width: 1, color: COLORS.divider, radius: 13 })
-            .onChange((value: string) => { this.tokenInput = value })
+            .onChange((value: string) => {
+              this.tokenInput = value
+              this.pendingBinding = undefined
+            })
           Row() {
             Row({ space: 5 }) {
               SymbolGlyph(this.showToken ? $r('sys.symbol.eye') : $r('sys.symbol.eye_slash')).fontSize(14).fontColor([COLORS.primary])
@@ -1263,6 +1645,77 @@ struct Index {
     .height('100%')
     .edgeEffect(EdgeEffect.Spring)
     .scrollBar(BarState.Off)
+  }
+
+  @Builder
+  private ProfilesSheet() {
+    Scroll() {
+      Column({ space: 12 }) {
+        Row({ space: 12 }) {
+          ReferenceIcon({ name: '空间', icon: $r('sys.symbol.house'), iconSize: 52, iconRadius: 17,
+            tint: COLORS.primary, iconBackground: COLORS.iconPrimary })
+          Column() {
+            Text('已绑定空间').fontSize(20).fontWeight(FontWeight.Bold).fontColor(COLORS.text)
+            Text('每次只使用一个 active profile').fontSize(12).fontColor(COLORS.secondary).margin({ top: 5 })
+          }.alignItems(HorizontalAlign.Start).layoutWeight(1)
+        }.width('100%').padding({ top: 4, left: 2, right: 2 })
+        if (this.profiles.length > 0) {
+          ForEach(this.profiles, (profile: ControllerProfile) => {
+            this.ProfileRow(profile)
+          }, (profile: ControllerProfile) => profile.profileId)
+        } else {
+          this.EmptyState('暂无已绑定空间', '添加服务器后，可在这里快速切换。')
+        }
+        ReferenceSettingCard({
+          title: '添加监控空间',
+          subtitle: '绑定另一个服务器或控制器',
+          icon: $r('sys.symbol.plus'),
+          accent: COLORS.primary,
+          iconBackground: COLORS.iconPrimary,
+          showChevron: true,
+          onActivate: () => { this.openNewProfileBindingSheet() }
+        })
+      }
+      .width('100%')
+      .padding({ left: 20, right: 20, top: 6, bottom: 28 })
+    }
+    .width('100%')
+    .height('100%')
+    .edgeEffect(EdgeEffect.Spring)
+    .scrollBar(BarState.Off)
+  }
+
+  @Builder
+  private ProfileRow(profile: ControllerProfile) {
+    Row({ space: 12 }) {
+      ReferenceIcon({ name: profile.controllerName, icon: $r('sys.symbol.house'), iconSize: 48, iconRadius: 15,
+        tint: profile.profileId === this.activeProfileId ? COLORS.success : COLORS.primary,
+        iconBackground: profile.profileId === this.activeProfileId ? COLORS.iconSuccess : COLORS.iconPrimary })
+      Column() {
+        Text(profile.controllerName.length > 0 ? profile.controllerName : '未命名监控空间')
+          .fontSize(16).fontWeight(FontWeight.Bold).fontColor(COLORS.text)
+          .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+        Text(this.profileSubtitle(profile)).fontSize(11).fontColor(COLORS.secondary)
+          .margin({ top: 5 }).maxLines(2).textOverflow({ overflow: TextOverflow.Ellipsis })
+      }.alignItems(HorizontalAlign.Start).layoutWeight(1)
+      if (profile.profileId === this.activeProfileId) {
+        SymbolGlyph($r('sys.symbol.checkmark')).fontSize(16).fontColor([COLORS.success])
+      }
+      Button() {
+        SymbolGlyph($r('sys.symbol.xmark')).fontSize(14).fontColor([COLORS.danger])
+      }
+      .width(34).height(34).type(ButtonType.Circle).backgroundColor(COLORS.dangerSoft)
+      .enabled(!this.profileActionBusy)
+      .onClick(() => {
+        this.confirmDataAction('删除监控空间', '将清除该空间在本机保存的安全凭据。', () => { this.removeProfile(profile.profileId) })
+      })
+    }
+    .width('100%')
+    .padding({ left: 14, right: 10, top: 13, bottom: 13 })
+    .backgroundColor(profile.profileId === this.activeProfileId ? COLORS.primarySoft : COLORS.card)
+    .borderRadius(20)
+    .border({ width: 1, color: profile.profileId === this.activeProfileId ? COLORS.primary : COLORS.border, radius: 20 })
+    .onClick(() => { this.switchProfile(profile.profileId) })
   }
 
   @Builder
@@ -1616,37 +2069,121 @@ struct Index {
             Column() {
               Text('告警动态').fontSize(17).fontWeight(FontWeight.Bold).fontColor(COLORS.text)
               Text('需要关注的服务器事件').fontSize(11).fontColor(COLORS.muted).margin({ top: 4 })
-            }.alignItems(HorizontalAlign.Start)
-            Blank()
-            Text(`${this.alerts.filter((alert: AlertEvent) => alert.status !== 'RESOLVED').length} 条未解决`).fontSize(12).fontColor(COLORS.warning)
+            }
+              .alignItems(HorizontalAlign.Start)
+              .layoutWeight(1)
+              .margin({ right: 14 })
+            Row({ space: 10 }) {
+              Column() {
+                Text(`${this.alerts.filter((alert: AlertEvent) => alert.status !== 'RESOLVED').length} 条未解决`).fontSize(12).fontColor(COLORS.warning)
+                Text(this.alertFilterSummary()).fontSize(10).fontColor(COLORS.muted).margin({ top: 4 })
+              }.alignItems(HorizontalAlign.End)
+              Button() {
+                Image($r('app.media.filter_icon'))
+                  .width(20)
+                  .height(20)
+                  .objectFit(ImageFit.Contain)
+              }
+                .width(42)
+                .height(42)
+                .type(ButtonType.Circle)
+                .padding(0)
+                .backgroundColor(COLORS.card)
+                .border({ width: 1, color: COLORS.border, radius: 21 })
+                .shadow({ radius: 10, color: COLORS.shadow, offsetY: 3 })
+                .bindMenu(this.AlertFilterMenu)
+            }.alignItems(VerticalAlign.Center)
           }.width('100%').padding({ left: 4, right: 4 }).opacity(this.introVisible ? 1 : 0).translate({ y: this.introVisible ? 0 : 18 })
-          if (this.alerts.length) {
+          if (this.filteredAlerts().length) {
             GridRow({
               columns: 12,
               gutter: { x: 10, y: 10 },
               breakpoints: { value: ['620vp', '980vp'], reference: BreakpointsReference.ComponentSize }
             }) {
-              ForEach(this.alerts, (alert: AlertEvent) => {
+              ForEach(this.filteredAlerts(), (alert: AlertEvent) => {
                 GridCol({ span: { xs: 12, sm: 6, md: 4 } }) {
                   this.AlertRow(alert)
                 }
+                  .transition(TransitionEffect.OPACITY.combine(TransitionEffect.translate({ x: 0, y: 12 }))
+                    .animation({ duration: 260, curve: curves.springMotion(0.55, 0.72) }))
               }, (alert: AlertEvent) => `${alert.id}-${this.alertRevision}`)
             }.width('100%')
               .opacity(this.listsVisible ? 1 : 0).translate({ y: this.listsVisible ? 0 : 18 })
+              .animation({ duration: 280, curve: curves.springMotion(0.55, 0.72) })
           } else {
-            this.EmptyState('没有告警记录', '一切正常，新的告警会出现在这里。')
+            Column() {
+              this.EmptyState(this.alerts.length ? '没有符合条件的告警' : '没有告警记录',
+                this.alerts.length ? '调整上方筛选条件后再查看。' : '一切正常，新的告警会出现在这里。')
+            }
+              .width('100%')
+              .layoutWeight(1)
+              .justifyContent(FlexAlign.Center)
+              .transition(TransitionEffect.OPACITY.combine(TransitionEffect.scale({ x: 0.96, y: 0.96 }))
+                .animation({ duration: 260, curve: curves.springMotion(0.55, 0.72) }))
           }
           Blank().height(this.contentBottomInset())
         }
         .width('100%')
-        .constraintSize({ maxWidth: this.pageContainerWidth() })
+        .constraintSize({ minHeight: this.alertsContentMinHeight(), maxWidth: this.pageContainerWidth() })
         .justifyContent(FlexAlign.Start)
         .alignItems(HorizontalAlign.Start)
         .padding({ left: getPageHorizontalPadding(this.layoutSize), right: getPageHorizontalPadding(this.layoutSize) })
-      }.width('100%').alignItems(HorizontalAlign.Center)
+      }.width('100%').alignItems(HorizontalAlign.Center).justifyContent(FlexAlign.Start)
     }.width('100%').height('100%').opacity(this.alertsPageVisible ? 1 : 0).translate({ y: this.alertsPageVisible ? 0 : 16 })
       .animation({ duration: 360, curve: curves.springMotion(0.45, 0.78) })
+      .align(Alignment.Top)
       .edgeEffect(EdgeEffect.Spring).scrollBar(BarState.Off).clip(false)
+  }
+
+  @Builder
+  private AlertFilterMenu() {
+    Menu() {
+      MenuItemGroup({ header: '状态' }) {
+        MenuItem({ content: '全部状态' })
+          .selectIcon(true)
+          .selected(this.alertStatusFilter === 'ALL')
+          .onClick(() => { this.alertStatusFilter = 'ALL' })
+        MenuItem({ content: '处理中' })
+          .selectIcon(true)
+          .selected(this.alertStatusFilter === 'ACTIVE')
+          .onClick(() => { this.alertStatusFilter = 'ACTIVE' })
+        MenuItem({ content: '待确认' })
+          .selectIcon(true)
+          .selected(this.alertStatusFilter === 'OPEN')
+          .onClick(() => { this.alertStatusFilter = 'OPEN' })
+        MenuItem({ content: '已确认' })
+          .selectIcon(true)
+          .selected(this.alertStatusFilter === 'ACKNOWLEDGED')
+          .onClick(() => { this.alertStatusFilter = 'ACKNOWLEDGED' })
+        MenuItem({ content: '已恢复' })
+          .selectIcon(true)
+          .selected(this.alertStatusFilter === 'RESOLVED')
+          .onClick(() => { this.alertStatusFilter = 'RESOLVED' })
+      }
+      MenuItemGroup({ header: '级别' }) {
+        MenuItem({ content: '全部级别' })
+          .selectIcon(true)
+          .selected(this.alertSeverityFilter === 'ALL')
+          .onClick(() => { this.alertSeverityFilter = 'ALL' })
+        MenuItem({ content: '严重' })
+          .selectIcon(true)
+          .selected(this.alertSeverityFilter === 'CRITICAL')
+          .onClick(() => { this.alertSeverityFilter = 'CRITICAL' })
+        MenuItem({ content: '注意' })
+          .selectIcon(true)
+          .selected(this.alertSeverityFilter === 'WARNING')
+          .onClick(() => { this.alertSeverityFilter = 'WARNING' })
+        MenuItem({ content: '提示' })
+          .selectIcon(true)
+          .selected(this.alertSeverityFilter === 'INFO')
+          .onClick(() => { this.alertSeverityFilter = 'INFO' })
+      }
+      if (this.confirmableFilteredAlerts().length > 0) {
+        MenuItem({ content: this.alertBatchBusy ? '正在确认…' : `确认当前 ${this.confirmableFilteredAlerts().length} 条告警` })
+          .enabled(!this.alertBatchBusy)
+          .onClick(() => { this.acknowledgeFilteredAlerts() })
+      }
+    }
   }
 
   @Builder
@@ -1673,7 +2210,7 @@ struct Index {
             title: this.connection ? '已连接' : '未绑定',
             subtitle: this.connection?.baseUrl ?? '点击下方绑定监控服务器',
             value: this.connection ? '正常' : '待绑定',
-            status: this.connection ? (this.lastUpdated ? `同步于 ${this.lastUpdated}` : '等待同步') : '尚未同步',
+            status: this.syncStatusLabel(),
             icon: $r('sys.symbol.house'),
             accent: this.connection ? COLORS.success : COLORS.warning,
             iconBackground: this.connection ? COLORS.iconSuccess : COLORS.iconWarning,
@@ -1711,6 +2248,15 @@ struct Index {
     Column({ space: 10 }) {
       this.SettingHeader('连接空间')
       ReferenceSettingCard({
+        title: this.activeProfileName(),
+        subtitle: this.connection?.baseUrl ?? '管理已绑定的监控空间',
+        icon: $r('sys.symbol.house'),
+        accent: this.connection ? COLORS.success : COLORS.warning,
+        iconBackground: this.connection ? COLORS.iconSuccess : COLORS.iconWarning,
+        showChevron: true,
+        onActivate: () => { this.openProfilesSheet() }
+      })
+      ReferenceSettingCard({
         title: '访问凭据',
         subtitle: this.showSensitiveValues && this.connection?.token ? this.connection.token : this.connection?.token ? `${this.connection.token.substring(0, Math.min(12, this.connection.token.length))}…` : '--',
         icon: $r('sys.symbol.key'), accent: COLORS.primary, iconBackground: COLORS.iconPrimary,
@@ -1721,10 +2267,6 @@ struct Index {
         subtitle: this.autoRefreshEnabled ? `${this.refreshIntervalLabel()} · 页面可见时` : `已暂停 · ${this.refreshIntervalLabel()}`,
         icon: $r('sys.symbol.arrow_clockwise'), accent: COLORS.primary, iconBackground: COLORS.iconPrimary,
         showChevron: true, onActivate: () => { this.chooseRefreshInterval() }
-      })
-      ReferenceSettingCard({
-        title: '数据来源', subtitle: 'REST API / PAT', icon: $r('sys.symbol.share'),
-        accent: COLORS.primary, iconBackground: COLORS.iconPrimary
       })
     }.width('100%')
   }
@@ -1766,13 +2308,15 @@ struct Index {
       this.SettingsAction($r('sys.symbol.square_grid_2x2'), this.connection ? '重新绑定服务器' : '绑定服务器', this.connection ? '替换当前 API Token 或监控地址' : '输入地址和 Token 连接监控空间', () => {
         this.openBindingSheet()
       })
+      this.SettingsAction($r('sys.symbol.plus'), '添加监控空间', '保留现有空间并绑定另一个服务器', () => {
+        this.openNewProfileBindingSheet()
+      })
       this.SettingsAction($r('sys.symbol.chevron_left'), '解除绑定', '清除本机保存的访问凭据', () => {
         this.confirmDataAction('确认解除绑定', '将清除本机保存的服务器地址和 Token，其他显示设置不会受影响。', () => { this.unbind() })
       }, true)
       this.SettingHeader('隐私与关于')
-      this.SettingItem('安全提示', '建议使用只读 Token', $r('sys.symbol.lock'))
       ReferenceSettingCard({
-        title: '关于星辰云巡', subtitle: '品牌、版本、相关政策与支持', icon: $r('sys.symbol.person'),
+        title: '关于星辰云巡', subtitle: '品牌、版本、政策、数据与项目', icon: $r('sys.symbol.person'),
         accent: COLORS.primary, iconBackground: COLORS.iconPrimary, showChevron: true,
         onActivate: () => {
           this.getUIContext().getRouter().pushUrl({ url: 'pages/About' }).catch(() => {
@@ -1807,17 +2351,6 @@ struct Index {
       if (option.id === this.themeId) return option.name
     }
     return '星辉金'
-  }
-
-  @Builder
-  private SettingItem(title: string, value: string, icon: Resource) {
-    ReferenceSettingCard({
-      title: title,
-      subtitle: value,
-      icon: icon,
-      accent: COLORS.primary,
-       iconBackground: COLORS.iconPrimary
-    })
   }
 
   @Builder
@@ -2019,6 +2552,8 @@ struct DeviceDetailDestination {
   @Prop windowHeightVp: number = 0
   @State device: Device | null = null
   @State history: Metric[] = []
+  @State diagnostics: DeviceDiagnostics | null = null
+  @State diagnosticsMessage: string = ''
   @State isLoading: boolean = true
   @State errorMessage: string = ''
 
@@ -2036,17 +2571,66 @@ struct DeviceDetailDestination {
     }
     this.isLoading = true
     this.errorMessage = ''
+    this.diagnosticsMessage = ''
     try {
       const client = new MonitorApi(this.connection)
-      const responses = await Promise.all([client.device(this.deviceId), client.history(this.deviceId, 6)])
-      this.device = responses[0]
-      this.history = responses[1]
+      this.device = await client.device(this.deviceId)
+      const repository: MonitorRepository = new MonitorRepository(client)
+      try {
+        this.diagnostics = await repository.diagnostics(this.deviceId)
+      } catch (error) {
+        const diagnosticsError: MonitorApiError = error instanceof MonitorApiError
+          ? error : new MonitorApiError('诊断信息加载失败')
+        this.diagnostics = null
+        if (diagnosticsError.kind !== 'UNSUPPORTED') this.diagnosticsMessage = diagnosticsError.message
+      }
+      try {
+        const response: MetricHistoryResponse = await repository.history(this.deviceId, '6H')
+        this.history = this.historyMetrics(response.points)
+      } catch (error) {
+        const historyError: MonitorApiError = error instanceof MonitorApiError
+          ? error : new MonitorApiError('趋势数据加载失败')
+        this.history = await client.history(this.deviceId, 6)
+        if (historyError.kind !== 'UNSUPPORTED' && this.diagnosticsMessage.length === 0) {
+          this.diagnosticsMessage = historyError.message
+        }
+      }
     } catch (error) {
       const apiError = error as MonitorApiError
       this.errorMessage = apiError?.message ?? '设备详情加载失败'
     } finally {
       this.isLoading = false
     }
+  }
+
+  private historyMetrics(points: MetricHistoryPoint[]): Metric[] {
+    const result: Metric[] = []
+    for (let index: number = 0; index < points.length; index++) {
+      const point: MetricHistoryPoint = points[index]
+      result.push({
+        id: index,
+        deviceId: this.deviceId,
+        collectedAt: point.collectedAt,
+        cpuUsage: point.cpuUsage,
+        memoryUsage: point.memoryUsage,
+        swapUsage: point.swapUsage,
+        load1: point.load1,
+        load5: point.load5,
+        load15: point.load15,
+        diskUsage: point.diskUsage,
+        diskReadBps: 0,
+        diskWriteBps: 0,
+        networkSentBps: point.networkSentBps,
+        networkRecvBps: point.networkRecvBps,
+        networkSentBytes: 0,
+        networkRecvBytes: 0,
+        tcpConnections: 0,
+        disks: [],
+        processes: [],
+        services: []
+      })
+    }
+    return result
   }
 
   private statusLabel(status: DeviceStatus): string {
@@ -2063,6 +2647,19 @@ struct DeviceDetailDestination {
 
   private percent(value: number | undefined | null): string {
     return value === undefined || value === null ? '--' : `${Math.round(value)}%`
+  }
+
+  private rate(value: number): string {
+    if (value >= 1024 * 1024) return `${(value / 1024 / 1024).toFixed(1)} MB/s`
+    if (value >= 1024) return `${(value / 1024).toFixed(1)} KB/s`
+    return `${Math.round(value)} B/s`
+  }
+
+  private bytes(value: number): string {
+    if (value >= 1024 * 1024 * 1024) return `${(value / 1024 / 1024 / 1024).toFixed(1)} GB`
+    if (value >= 1024 * 1024) return `${(value / 1024 / 1024).toFixed(1)} MB`
+    if (value >= 1024) return `${(value / 1024).toFixed(1)} KB`
+    return `${Math.round(value)} B`
   }
 
   private finiteMetric(value: number | undefined | null): number | null {
@@ -2234,7 +2831,29 @@ struct DeviceDetailDestination {
         this.DeviceTrendCard()
       }
     }.width('100%')
+    if (this.diagnostics) {
+      GridRow({
+        columns: 12,
+        gutter: { x: 16, y: 16 },
+        breakpoints: { value: ['760vp'], reference: BreakpointsReference.ComponentSize }
+      }) {
+        GridCol({ span: { xs: 12, sm: 5 } }) {
+          this.DiagnosticsHealthCard()
+        }
+        GridCol({ span: { xs: 12, sm: 7 } }) {
+          this.DiagnosticsDiskCard()
+        }
+      }.width('100%')
+      this.DiagnosticsProcessCard()
+      this.DiagnosticsNetworkCard()
+    }
     this.DeviceServicesCard()
+    if (this.diagnosticsMessage) {
+      Row({ space: 8 }) {
+        SymbolGlyph($r('sys.symbol.info_circle')).fontSize(17).fontColor([COLORS.warning])
+        Text(this.diagnosticsMessage).fontSize(12).fontColor(COLORS.secondary).layoutWeight(1).maxLines(2)
+      }.width('100%').padding(14).backgroundColor(COLORS.warningSoft).borderRadius(8)
+    }
     if (this.errorMessage) {
       Row({ space: 8 }) {
         SymbolGlyph($r('sys.symbol.questionmark_circle')).fontSize(17).fontColor([COLORS.danger])
@@ -2321,6 +2940,161 @@ struct DeviceDetailDestination {
         Text(this.device?.latest ? 'Agent 尚未上报系统服务' : '暂无最新指标，等待 Agent 上报').fontSize(11).fontColor(COLORS.muted).padding({ top: 10, bottom: 8 })
       }
     }.width('100%').padding(18).backgroundColor(COLORS.card).borderRadius(22).border({ width: 1, color: COLORS.border, radius: 22 })
+  }
+
+  @Builder
+  private DiagnosticsHealthCard() {
+    Column({ space: 12 }) {
+      Row() {
+        Text('健康诊断').fontSize(17).fontWeight(FontWeight.Bold).fontColor(COLORS.text)
+        Blank()
+        Text(this.diagnosticHealthLabel()).fontSize(11).fontColor(this.diagnosticHealthColor())
+      }.width('100%')
+      Row({ space: 8 }) {
+        this.DiagnosticStat('温度', this.diagnostics ? `${Math.round(this.diagnostics.totals.temperatureCelsius)}℃` : '--')
+        this.DiagnosticStat('TCP', this.diagnostics ? `${this.diagnostics.totals.tcpConnections}` : '--')
+      }.width('100%')
+      Row({ space: 8 }) {
+        this.DiagnosticStat('上行', this.diagnostics ? this.rate(this.diagnostics.totals.networkSentBps) : '--')
+        this.DiagnosticStat('下行', this.diagnostics ? this.rate(this.diagnostics.totals.networkRecvBps) : '--')
+      }.width('100%')
+      if (this.diagnostics && this.diagnostics.health.messages.length) {
+        ForEach(this.diagnostics.health.messages, (message: string) => {
+          Row({ space: 7 }) {
+            Circle({ width: 6, height: 6 }).fill(COLORS.danger)
+            Text(message).fontSize(11).fontColor(COLORS.secondary).layoutWeight(1)
+          }.width('100%')
+        }, (message: string) => message)
+      } else {
+        Text('未发现 SMART、完整性或防火墙异常').fontSize(11).fontColor(COLORS.success)
+      }
+    }.width('100%').padding(18).backgroundColor(COLORS.card).borderRadius(8)
+      .border({ width: 1, color: COLORS.border, radius: 8 })
+  }
+
+  @Builder
+  private DiagnosticStat(label: string, value: string) {
+    Column() {
+      Text(value).fontSize(14).fontWeight(FontWeight.Medium).fontColor(COLORS.text).maxLines(1)
+      Text(label).fontSize(10).fontColor(COLORS.muted).margin({ top: 3 })
+    }.layoutWeight(1).height(54).justifyContent(FlexAlign.Center).backgroundColor(COLORS.surface).borderRadius(8)
+  }
+
+  @Builder
+  private DiagnosticsDiskCard() {
+    Column({ space: 8 }) {
+      Row() {
+        Text('磁盘与 SMART').fontSize(17).fontWeight(FontWeight.Bold).fontColor(COLORS.text)
+        Blank()
+        Text(this.diagnostics ? `${this.diagnostics.disks.length} 块` : '0 块').fontSize(11).fontColor(COLORS.primary)
+      }.width('100%')
+      if (this.diagnostics && this.diagnostics.disks.length) {
+        ForEach(this.diagnostics.disks, (disk: DiskDiagnostic) => {
+          Column({ space: 7 }) {
+            Row() {
+              Column() {
+                Text(disk.mountpoint || disk.device || '未命名磁盘').fontSize(13).fontWeight(FontWeight.Medium).fontColor(COLORS.text)
+                Text(`${disk.fileSystem || '未知文件系统'} · ${this.bytes(disk.usedBytes)} / ${this.bytes(disk.totalBytes)}`)
+                  .fontSize(10).fontColor(COLORS.muted).margin({ top: 3 })
+              }.alignItems(HorizontalAlign.Start).layoutWeight(1)
+              Text(`${Math.round(disk.usagePercent)}%`).fontSize(12).fontColor(disk.usagePercent >= 90 ? COLORS.danger : COLORS.secondary)
+              Text(this.smartLabel(disk)).fontSize(10).fontColor(this.smartColor(disk)).margin({ left: 9 })
+            }.width('100%')
+            Progress({ value: disk.usagePercent, total: 100, type: ProgressType.Linear })
+              .width('100%').height(4).color(disk.usagePercent >= 90 ? COLORS.danger : COLORS.primary)
+              .backgroundColor(COLORS.divider)
+          }.width('100%').padding({ top: 7, bottom: 7 }).border({ width: { bottom: 1 }, color: COLORS.divider })
+        }, (disk: DiskDiagnostic) => `${disk.device}-${disk.mountpoint}`)
+      } else {
+        Text('Agent 尚未上报磁盘信息').fontSize(11).fontColor(COLORS.muted).padding({ top: 14, bottom: 14 })
+      }
+    }.width('100%').padding(18).backgroundColor(COLORS.card).borderRadius(8)
+      .border({ width: 1, color: COLORS.border, radius: 8 })
+  }
+
+  @Builder
+  private DiagnosticsProcessCard() {
+    Column({ space: 10 }) {
+      Text('资源占用进程').fontSize(17).fontWeight(FontWeight.Bold).fontColor(COLORS.text)
+      GridRow({ columns: 12, gutter: { x: 16, y: 12 } }) {
+        GridCol({ span: { xs: 12, sm: 6 } }) {
+          this.DiagnosticProcessList('CPU Top', this.diagnostics?.topCpuProcesses ?? [], true)
+        }
+        GridCol({ span: { xs: 12, sm: 6 } }) {
+          this.DiagnosticProcessList('内存 Top', this.diagnostics?.topMemoryProcesses ?? [], false)
+        }
+      }.width('100%')
+    }.width('100%').padding(18).backgroundColor(COLORS.card).borderRadius(8)
+      .border({ width: 1, color: COLORS.border, radius: 8 })
+  }
+
+  @Builder
+  private DiagnosticProcessList(title: string, processes: ProcessDiagnostic[], cpu: boolean) {
+    Column({ space: 4 }) {
+      Text(title).fontSize(11).fontWeight(FontWeight.Medium).fontColor(COLORS.secondary)
+        .width('100%').textAlign(TextAlign.Start)
+      if (processes.length) {
+        ForEach(processes, (process: ProcessDiagnostic) => {
+          Row() {
+            Text(process.name || `PID ${process.pid}`).fontSize(12).fontColor(COLORS.text).layoutWeight(1).maxLines(1)
+            Text(`${(cpu ? process.cpuPercent : process.memoryPercent).toFixed(1)}%`)
+              .fontSize(11).fontColor(cpu ? COLORS.primary : COLORS.success)
+          }.width('100%').height(30).border({ width: { bottom: 1 }, color: COLORS.divider })
+        }, (process: ProcessDiagnostic) => `${title}-${process.pid}`)
+      } else {
+        Text('暂无进程数据').fontSize(11).fontColor(COLORS.muted).padding({ top: 8, bottom: 8 })
+      }
+    }.width('100%').alignItems(HorizontalAlign.Start)
+  }
+
+  @Builder
+  private DiagnosticsNetworkCard() {
+    Column({ space: 8 }) {
+      Row() {
+        Text('网络接口').fontSize(17).fontWeight(FontWeight.Bold).fontColor(COLORS.text)
+        Blank()
+        Text(this.diagnostics ? `${this.diagnostics.networkInterfaces.length} 个` : '0 个').fontSize(11).fontColor(COLORS.primary)
+      }.width('100%')
+      if (this.diagnostics && this.diagnostics.networkInterfaces.length) {
+        ForEach(this.diagnostics.networkInterfaces.slice(0, 8), (item: NetworkInterfaceDiagnostic) => {
+          Row() {
+            Column() {
+              Text(item.name).fontSize(13).fontWeight(FontWeight.Medium).fontColor(COLORS.text)
+              Text(item.addresses.length ? item.addresses.join(' · ') : '暂无地址')
+                .fontSize(10).fontColor(COLORS.muted).maxLines(2).margin({ top: 3 })
+            }.alignItems(HorizontalAlign.Start).layoutWeight(1)
+            Text(`MTU ${item.mtu}`).fontSize(10).fontColor(COLORS.secondary).margin({ left: 10 })
+          }.width('100%').padding({ top: 8, bottom: 8 }).border({ width: { bottom: 1 }, color: COLORS.divider })
+        }, (item: NetworkInterfaceDiagnostic) => item.name)
+      } else {
+        Text('Agent 尚未上报网络接口').fontSize(11).fontColor(COLORS.muted).padding({ top: 10, bottom: 8 })
+      }
+    }.width('100%').padding(18).backgroundColor(COLORS.card).borderRadius(8)
+      .border({ width: 1, color: COLORS.border, radius: 8 })
+  }
+
+  private diagnosticHealthLabel(): string {
+    if (!this.diagnostics) return '等待数据'
+    if (this.diagnostics.health.smartFailure || this.diagnostics.health.integrityChanged) return '需要处理'
+    if (this.diagnostics.health.messages.length) return '需要关注'
+    return '状态正常'
+  }
+
+  private diagnosticHealthColor(): string {
+    if (!this.diagnostics) return COLORS.muted
+    if (this.diagnostics.health.smartFailure || this.diagnostics.health.integrityChanged) return COLORS.danger
+    if (this.diagnostics.health.messages.length) return COLORS.warning
+    return COLORS.success
+  }
+
+  private smartLabel(disk: DiskDiagnostic): string {
+    if (!disk.smart.available) return 'SMART 未知'
+    return disk.smart.healthy ? 'SMART 正常' : 'SMART 异常'
+  }
+
+  private smartColor(disk: DiskDiagnostic): string {
+    if (!disk.smart.available) return COLORS.muted
+    return disk.smart.healthy ? COLORS.success : COLORS.danger
   }
 
   @Builder

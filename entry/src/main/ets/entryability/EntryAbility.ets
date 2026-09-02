@@ -5,6 +5,7 @@ import { MonitorStorage } from '../utils/MonitorStorage';
 import { ColorModePreference } from '../model/ThemeModels';
 import { AppLifecycle } from '../utils/AppLifecycle';
 import { getLayoutSize, LayoutSize } from '../model/ResponsiveLayout';
+import { ProfileSessionCoordinator } from '../service/ProfileSessionCoordinator';
 
 const DOMAIN = 0x0000;
 
@@ -30,6 +31,7 @@ export default class EntryAbility extends UIAbility {
 
   onCreate(want: Want, launchParam: AbilityConstant.LaunchParam): void {
     AppLifecycle.setAbilityContext(this.context);
+    ProfileSessionCoordinator.shared().initialize(this.context).catch((): void => {});
     try {
       this.context.getApplicationContext().setColorMode(ConfigurationConstant.ColorMode.COLOR_MODE_NOT_SET);
     } catch (err) {

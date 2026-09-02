@@ -1,3 +1,5 @@
+import { BindingMetadata } from './ControllerProfileModels'
+
 export type DeviceStatus = 'PENDING' | 'ONLINE' | 'OFFLINE'
 export type AlertSeverity = 'INFO' | 'WARNING' | 'CRITICAL'
 export type AlertStatus = 'OPEN' | 'ACKNOWLEDGED' | 'RESOLVED'
@@ -10,6 +12,8 @@ export interface MonitorConnection {
   token: string
   /** Scopes are included by Web-generated binding QR codes. Manual tokens may omit them. */
   scopes?: string[]
+  /** Strictly parsed QR v2 metadata. Bootstrap remains authoritative. */
+  binding?: BindingMetadata
 }
 
 export interface Metric {

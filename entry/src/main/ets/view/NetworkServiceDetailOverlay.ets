@@ -19,6 +19,7 @@ export struct NetworkServiceDetailOverlay {
   @Prop canRunChecks: boolean = true
   @Prop runningServiceId: number = -1
   @Prop transitionId: string = ''
+  @Prop topInset: number = 0
   @Prop bottomInset: number = 0
   @Prop layoutSize: LayoutSize = 'compact'
   @Prop windowWidthVp: number = 360
@@ -35,7 +36,7 @@ export struct NetworkServiceDetailOverlay {
   @State refreshLight: hdsEffect.PointLightSourceType = hdsEffect.PointLightSourceType.NONE
 
   build() {
-    Stack({ alignContent: Alignment.Center }) {
+    Stack({ alignContent: Alignment.TopStart }) {
       Column()
         .width('100%')
         .height('100%')
@@ -45,66 +46,73 @@ export struct NetworkServiceDetailOverlay {
         .transition(TransitionEffect.OPACITY.animation({ duration: 320, curve: Curve.EaseOut }))
         .onClick(() => this.onClose())
       Column() {
-        Scroll() {
-          Column({ space: 14 }) {
-            this.HeroHeader()
-            Row({ space: 9 }) {
-              this.SummaryMetric('当前状态', this.stateLabel(), this.stateColor())
-              this.SummaryMetric('延迟', this.latencyLabel(this.service.latest), this.themePalette().primary)
-              this.SummaryMetric('状态码', this.statusCodeLabel(), this.themePalette().purple)
-            }.width('100%')
-            Column() {
-              this.DetailLine('探测类型', this.serviceTypeLabel(this.service.type))
-              this.DetailLine('服务状态', this.service.enabled ? '已启用' : '已停用')
-              this.DetailLine('探测间隔', `${this.service.intervalSeconds} 秒`)
-              this.DetailLine('最近探测', this.time(this.service.latest?.checkedAt ?? null))
-              this.DetailLine('证书到期', this.time(this.service.latest?.certificateExpiresAt ?? null))
-              this.DetailLine('错误信息', this.service.latest?.error ?? '--')
+        Blank().height(this.topInset)
+        Column() {
+          Scroll() {
+            Column({ space: 14 }) {
+              this.HeroHeader()
+              Row({ space: 9 }) {
+                this.SummaryMetric('当前状态', this.stateLabel(), this.stateColor())
+                this.SummaryMetric('延迟', this.latencyLabel(this.service.latest), this.themePalette().primary)
+                this.SummaryMetric('状态码', this.statusCodeLabel(), this.themePalette().purple)
+              }.width('100%')
+              Column() {
+                this.DetailLine('探测类型', this.serviceTypeLabel(this.service.type))
+                this.DetailLine('服务状态', this.service.enabled ? '已启用' : '已停用')
+                this.DetailLine('探测间隔', `${this.service.intervalSeconds} 秒`)
+                this.DetailLine('最近探测', this.time(this.service.latest?.checkedAt ?? null))
+                this.DetailLine('证书到期', this.time(this.service.latest?.certificateExpiresAt ?? null))
+                this.DetailLine('错误信息', this.service.latest?.error ?? '--')
+              }
+              .width('100%')
+              .padding({ left: 16, right: 16, top: 8, bottom: 8 })
+              .backgroundColor(this.themePalette().surface)
+              .borderRadius(20)
+              .border({ width: 1, color: this.themePalette().divider, radius: 20 })
+              Row({ space: 10 }) {
+                this.CheckButton()
+                this.RefreshButton()
+              }.width('100%')
+              if (this.history.length > 0) {
+                this.AvailabilityRecordCard()
+                this.StatusStripCard()
+              }
+              Row() {
+                Text('历史记录')
+                  .fontSize(17)
+                  .fontWeight(FontWeight.Bold)
+                  .fontColor(this.themePalette().text)
+                Blank()
+                Text(this.historyCountLabel())
+                  .fontSize(11)
+                  .fontColor(this.themePalette().muted)
+              }.width('100%').padding({ left: 3, right: 3, top: 2 })
+              this.HistoryContent()
+              Blank().height(this.bottomInset + 16)
             }
             .width('100%')
-            .padding({ left: 16, right: 16, top: 8, bottom: 8 })
-            .backgroundColor(this.themePalette().surface)
-            .borderRadius(20)
-            .border({ width: 1, color: this.themePalette().divider, radius: 20 })
-            Row({ space: 10 }) {
-              this.CheckButton()
-              this.RefreshButton()
-            }.width('100%')
-            if (this.history.length > 0) {
-              this.AvailabilityRecordCard()
-              this.StatusStripCard()
-            }
-            Row() {
-              Text('历史记录')
-                .fontSize(17)
-                .fontWeight(FontWeight.Bold)
-                .fontColor(this.themePalette().text)
-              Blank()
-              Text(this.historyCountLabel())
-                .fontSize(11)
-                .fontColor(this.themePalette().muted)
-            }.width('100%').padding({ left: 3, right: 3, top: 2 })
-            this.HistoryContent()
-            Blank().height(this.bottomInset + 16)
+            .padding({ left: 18, right: 18, top: 18 })
           }
           .width('100%')
-          .padding({ left: 18, right: 18, top: 18 })
+          .height('100%')
+          .edgeEffect(EdgeEffect.Spring)
+          .scrollBar(BarState.Off)
         }
-        .width('100%')
-        .height('100%')
-        .edgeEffect(EdgeEffect.Spring)
-        .scrollBar(BarState.Off)
+        .width(this.detailPanelWidth())
+        .height(this.detailPanelHeight())
+        .backgroundColor(this.themePalette().card)
+        .borderRadius(32)
+        .border({ width: 1, color: this.themePalette().border, radius: 32 })
+        .shadow({ radius: 38, color: this.themePalette().shadowStrong, offsetY: 12 })
+        .clip(true)
+        .geometryTransition(this.transitionId)
+        .transition(TransitionEffect.OPACITY.animation({ duration: 380, curve: curves.springMotion(0.5, 0.76) }))
+        .onClick((_event: ClickEvent) => {})
       }
-      .width(this.detailPanelWidth())
-      .height(this.detailPanelHeight())
-      .backgroundColor(this.themePalette().card)
-      .borderRadius(32)
-      .border({ width: 1, color: this.themePalette().border, radius: 32 })
-      .shadow({ radius: 38, color: this.themePalette().shadowStrong, offsetY: 12 })
-      .clip(true)
-      .geometryTransition(this.transitionId)
-      .transition(TransitionEffect.OPACITY.animation({ duration: 380, curve: curves.springMotion(0.5, 0.76) }))
-      .onClick((_event: ClickEvent) => {})
+      .width('100%')
+      .height('100%')
+      .alignItems(HorizontalAlign.Center)
+      .justifyContent(FlexAlign.Start)
     }
     .width('100%')
     .height('100%')
@@ -496,7 +504,10 @@ export struct NetworkServiceDetailOverlay {
   }
 
   private detailPanelHeight(): number {
-    return getDetailPanelHeight(this.windowHeightVp, this.layoutSize)
+    const preferredHeight: number = getDetailPanelHeight(this.windowHeightVp, this.layoutSize)
+    const availableHeight: number = this.windowHeightVp - this.topInset - 16
+    if (availableHeight > 0 && preferredHeight > availableHeight) return availableHeight
+    return preferredHeight
   }
 
   private serviceTypeLabel(type: ServiceCheckType): string {
