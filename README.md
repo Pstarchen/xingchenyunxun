@@ -31,3 +31,4 @@
 ## 开源同步
 
 本项目用于同步开源鸿蒙版星辰云巡 App。GitHub 仓库：<https://github.com/Pstarchen/xingchenyunxun>
+Gitee 仓库：<https://gitee.com/starchen520/xingchenyunxun>
