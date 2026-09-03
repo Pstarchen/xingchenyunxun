@@ -10,6 +10,12 @@
 
 <img src="素材/推广素材/应用市场二维码.png" alt="星辰云巡华为应用市场二维码" width="220">
 
+星辰云巡可配合开源服务端「星辰监控」使用：
+
+- [星辰监控官网](https://xcmon.xciy.cn/)
+- [GitHub 服务端源码](https://github.com/Pstarchen/monitor-for-server)
+- [Gitee 服务端源码](https://gitee.com/starchen520/monitor-for-server)
+
 ![星辰云巡服务器监控功能总览](素材/宣传图/1.png)
 
 ## 核心能力
