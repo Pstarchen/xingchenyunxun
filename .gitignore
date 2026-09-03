@@ -13,6 +13,8 @@
 /.appanalyzer
 /.cache
 /material
+__pycache__/
+*.pyc
 *.p12
 *.pfx
 *.jks
